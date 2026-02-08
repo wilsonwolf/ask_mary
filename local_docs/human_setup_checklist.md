@@ -3,25 +3,26 @@
 > Everything **you** need to do before and during the build.
 > Claude Code handles all code — this list is accounts, credentials, and manual configuration only.
 >
-> **Estimated total time**: ~5 hours (P0 blocking: ~2h, P1: ~1.5h, P2: ~1.5h)
-> Many items can run in parallel.
+> **Approach**: Build-and-deploy simultaneously. All services run in GCP from hour zero — no local Postgres, no mocks. Your local machine runs Claude Code; everything else is cloud.
+>
+> **Estimated total time**: ~4.5 hours (P0: ~30 min, P1: ~1.5h, P2: ~1h, P3: ~1.5h)
 
 ---
 
 ## How to Use This Checklist
 
-1. Work through **P0 items first** — they block all development
-2. P1 items block specific phases but can wait until those phases start
-3. P2 items are dev workflow infrastructure — can be done in parallel
-4. After completing each item, note the credential/value in the **Secrets Collected** section at the bottom
-5. Hand the completed secrets list to Claude Code to store in GCP Secret Manager
+1. Work through **P0 items first** — Claude Code is blocked until these are done
+2. P1 items block voice integration — start these while Claude Code builds Phase 1
+3. P2 items block specific later phases — do when Claude Code reaches that phase
+4. P3 items are post-hackathon dev workflow infrastructure
+5. After completing each item, note the credential/value in the **Secrets Collected** section at the bottom
 
 ---
 
-## P0 — Blocking Prerequisites
+## P0 — Blocks All Development
 
-> **Must complete before Claude Code can start coding.**
-> Estimated: ~1h 45m (some items parallelizable)
+> **Claude Code cannot start coding without these.**
+> Estimated: ~30 min (parallelizable)
 
 ### 1. Create GCP Project (~10 min)
 
@@ -38,58 +39,61 @@
 - [ ] Note your **Project ID**: `___________________________`
 - [ ] Note the **Region** you chose (e.g. `us-central1`): `___________________________`
 
-### 2. Create Cloud SQL Postgres Instance (~5 min)
+### 2. Create Cloud SQL Postgres Instance (~10 min)
 
 > Requires: GCP project (#1)
+> We build against Cloud SQL from the start — no local Postgres.
 
 - [ ] Go to Cloud SQL in GCP Console
 - [ ] Create PostgreSQL instance
   - Instance name: `ask-mary-db`
+  - Database version: PostgreSQL 15+
   - Size: `db-f1-micro` (sufficient for hackathon)
   - Same region as project
   - Set a root password
-- [ ] Note **Connection string**: `___________________________`
+- [ ] Create a database named `ask_mary_dev`
+- [ ] Install the Cloud SQL Auth Proxy locally:
+  ```
+  # macOS
+  brew install cloud-sql-proxy
+  # Then run (keep this terminal open):
+  cloud-sql-proxy PROJECT_ID:REGION:ask-mary-db
+  ```
+  This lets your local machine connect to Cloud SQL via `localhost:5432`
+- [ ] Note **Instance connection name** (PROJECT:REGION:ask-mary-db): `___________________________`
 - [ ] Note **Root password**: `___________________________`
 
-### 3. Create GCS Audio Bucket (~5 min)
+### 3. Get OpenAI API Key (~5 min)
 
-> Requires: GCP project (#1)
-
-- [ ] Go to Cloud Storage in GCP Console
-- [ ] Create bucket
-  - Name: `ask-mary-audio`
-  - Same region as compute
-  - Standard storage class
-- [ ] Grant the Cloud Run service account `roles/storage.objectAdmin` on this bucket
-- [ ] Note **Bucket name**: `ask-mary-audio`
-
-### 4. Get OpenAI API Key (~5 min)
+> Can run in parallel with #1 and #2
 
 - [ ] Go to [platform.openai.com](https://platform.openai.com)
 - [ ] Create account or sign in
-- [ ] Generate API key (for Agents SDK runtime)
+- [ ] Generate API key (this is the application runtime — agents use OpenAI for reasoning)
 - [ ] Add billing / credits
 - [ ] Note **OPENAI_API_KEY**: `___________________________`
 
-### 5. Get Anthropic API Key (~5 min)
+**After #1, #2, #3 are done**: Hand credentials to Claude Code. Development starts immediately.
 
-- [ ] Go to [console.anthropic.com](https://console.anthropic.com)
-- [ ] Create account or sign in
-- [ ] Generate API key (for Claude Code dev workflow + Codex review)
-- [ ] Add billing / credits
-- [ ] Note **ANTHROPIC_API_KEY**: `___________________________`
+---
 
-### 6. Create Twilio Account + Buy Phone Number (~10 min)
+## P1 — Voice Integration
+
+> **Blocks voice agent testing. Start these while Claude Code builds Phase 1 (scaffolding, DB, agent stubs).**
+> Estimated: ~1h 30m
+
+### 4. Create Twilio Account + Buy Phone Number (~10 min)
 
 - [ ] Go to [twilio.com](https://www.twilio.com)
 - [ ] Create account (or sign in)
 - [ ] Buy a phone number with **Voice + SMS** capabilities
+- [ ] Enable Advanced Opt-Out (for DNC STOP handling)
 - [ ] (Optional) Set up WhatsApp Sandbox for WhatsApp channel
 - [ ] Note **TWILIO_ACCOUNT_SID**: `___________________________`
 - [ ] Note **TWILIO_AUTH_TOKEN**: `___________________________`
 - [ ] Note **TWILIO_PHONE_NUMBER**: `___________________________`
 
-### 7. Create ElevenLabs Account (~15 min)
+### 5. Create ElevenLabs Account (~15 min)
 
 - [ ] Go to [elevenlabs.io](https://elevenlabs.io)
 - [ ] Create account (or sign in)
@@ -100,21 +104,9 @@
 - [ ] Note **ELEVENLABS_API_KEY**: `___________________________`
 - [ ] Note **ELEVENLABS_AGENT_ID**: `___________________________`
 
-### 8. Set Up Databricks Workspace (~15 min)
+### 6. Configure ElevenLabs + Twilio Integration (~45 min)
 
-> Can run in parallel with items 4-7
-
-- [ ] Go to [databricks.com](https://www.databricks.com) or deploy via GCP Marketplace
-- [ ] Create workspace
-- [ ] Create SQL warehouse (serverless recommended for hackathon)
-- [ ] Generate personal access token
-- [ ] Note **DATABRICKS_SERVER_HOSTNAME**: `___________________________`
-- [ ] Note **DATABRICKS_HTTP_PATH**: `___________________________`
-- [ ] Note **DATABRICKS_TOKEN**: `___________________________`
-
-### 9. Configure ElevenLabs + Twilio Integration (~45 min)
-
-> Requires: Twilio (#6) + ElevenLabs (#7) accounts created
+> Requires: Twilio (#4) + ElevenLabs (#5) accounts created
 > This is **Task 1.7** from the implementation plan
 
 - [ ] In ElevenLabs dashboard, configure the native Twilio integration
@@ -127,14 +119,39 @@
   - [ ] Verify round-trip latency is reasonable (<2s response)
 - [ ] If issues: check Twilio logs, ElevenLabs logs, try alternative voice
 
+### 7. Create GCS Audio Bucket (~5 min)
+
+> Needed once voice recording is wired up
+
+- [ ] Go to Cloud Storage in GCP Console
+- [ ] Create bucket
+  - Name: `ask-mary-audio`
+  - Same region as compute
+  - Standard storage class
+- [ ] Grant the Cloud Run service account `roles/storage.objectAdmin` on this bucket
+- [ ] Note **Bucket name**: `ask-mary-audio`
+
 ---
 
-## P1 — Phase-Specific Tasks
+## P2 — Phase-Specific Tasks
 
-> **These block specific phases but not the initial build.**
-> Estimated: ~1h 45m
+> **These block specific later phases. Do them when Claude Code reaches that phase.**
+> Estimated: ~1h
 
-### 10. Create Google Calendar Service Account (~10 min)
+### 8. Set Up Databricks Workspace (~15 min)
+
+> Needed by: Phase 1 (analytics tables, trial/EHR reference data)
+> Can start in parallel with P1 items
+
+- [ ] Go to [databricks.com](https://www.databricks.com) or deploy via GCP Marketplace
+- [ ] Create workspace
+- [ ] Create SQL warehouse (serverless recommended for hackathon)
+- [ ] Generate personal access token
+- [ ] Note **DATABRICKS_SERVER_HOSTNAME**: `___________________________`
+- [ ] Note **DATABRICKS_HTTP_PATH**: `___________________________`
+- [ ] Note **DATABRICKS_TOKEN**: `___________________________`
+
+### 9. Create Google Calendar Service Account (~10 min)
 
 > Needed by: Phase 2 (scheduling agent)
 
@@ -146,16 +163,16 @@
 - [ ] Note **GOOGLE_CALENDAR_CREDENTIALS** (JSON key file path): `___________________________`
 - [ ] Note **GOOGLE_CALENDAR_ID**: `___________________________`
 
-### 11. Create GitHub Fine-Grained PAT (~5 min)
+### 10. Create GitHub Fine-Grained PAT (~5 min)
 
 > Needed by: Phase 4 (CI/CD) + dev workflow
 
 - [ ] Go to GitHub → Settings → Developer Settings → Fine-grained tokens
 - [ ] Create token with `repo` scope only (for `wilsonwolf/ask_mary`)
-- [ ] Set expiration (90 days recommended for hackathon)
+- [ ] Set expiration (90 days recommended)
 - [ ] Note **GITHUB_TOKEN**: `___________________________`
 
-### 12. Create Dashboard with Lovable (~60 min)
+### 11. Create Dashboard with Lovable (~60 min)
 
 > Needed by: Phase 4 (frontend)
 > Can start once Phase 2 API endpoints exist
@@ -171,7 +188,7 @@
 - [ ] Export generated code
 - [ ] Hand code to Claude Code for API integration
 
-### 13. Run End-to-End Test Call (~30 min)
+### 12. Run End-to-End Test Call (~30 min)
 
 > Needed by: Phase 5 (demo validation)
 > Requires: Full system deployed to Cloud Run
@@ -191,21 +208,37 @@
   - [ ] Audio recording saved to GCS
 - [ ] Note any issues for Claude Code to fix: `___________________________`
 
+### 13. Demo Prep (~30 min)
+
+> Last step before the demo
+
+- [ ] Write demo talking points script:
+  - [ ] Happy path: outreach → screening → booking → confirmation
+  - [ ] Handoff trigger scenario (safety keyword detected)
+  - [ ] No-show rescue flow
+  - [ ] Dashboard tour
+- [ ] Seed demo data (Claude Code can help):
+  - [ ] 5-10 realistic participants
+  - [ ] 2-3 clinical trials with visit templates
+  - [ ] Pre-populated events timeline
+  - [ ] Sample handoff tickets in queue
+
 ---
 
-## P2 — Dev Workflow Infrastructure
+## P3 — Dev Workflow Infrastructure (Post-Hackathon)
 
-> **Parallel track — sets up the Claude Code + Codex iteration loop.**
-> Can be done alongside P0/P1.
+> **Sets up the Claude Code + Codex autonomous iteration loop.**
+> Not needed during the hackathon — you are the review layer while at the keyboard.
 > Estimated: ~1h 30m
 
-### 14. Create Dev Workflow GCP Resources (~15 min)
+### 14. Get Anthropic API Key (~5 min)
 
-> Can reuse the same GCP project from #1 or create a separate one
+> For remote Codex review containers only — you already have Claude Code running locally
 
-- [ ] Enable Cloud Run API (if separate project)
-- [ ] Enable Artifact Registry API
-- [ ] Create Artifact Registry repository for Docker images
+- [ ] Go to [console.anthropic.com](https://console.anthropic.com)
+- [ ] Create account or sign in
+- [ ] Generate API key
+- [ ] Note **ANTHROPIC_API_KEY**: `___________________________`
 
 ### 15. Store All Secrets in GCP Secret Manager (~10 min)
 
@@ -230,7 +263,7 @@
 
 ### 16. Build Docker Images (~45 min)
 
-> Requires: GCP project (#14) + secrets stored (#15)
+> Requires: GCP project + secrets stored (#15)
 > Claude Code will write the Dockerfiles — you just build and push
 
 - [ ] Build `claude-code-dev` image (see `agent_dev_workflow_plan.md` Section 5.1)
@@ -248,7 +281,7 @@
 
 ### 17. Set Up GitHub Actions Workflows (~20 min)
 
-> Requires: GitHub PAT (#11)
+> Requires: GitHub PAT (#10)
 
 - [ ] Add repository secrets in GitHub (Settings → Secrets → Actions):
   - [ ] `GCP_PROJECT_ID`
@@ -257,21 +290,6 @@
   - [ ] `OPENAI_API_KEY`
 - [ ] Set up GCP Workload Identity Federation (or service account key) for GitHub Actions
 - [ ] Claude Code will create the workflow YAML files — just verify they appear in `.github/workflows/`
-
-### 18. Demo Prep (~30 min)
-
-> Last step before the hackathon demo
-
-- [ ] Write demo talking points script:
-  - [ ] Happy path: outreach → screening → booking → confirmation
-  - [ ] Handoff trigger scenario (safety keyword detected)
-  - [ ] No-show rescue flow
-  - [ ] Dashboard tour
-- [ ] Seed demo data (Claude Code can help):
-  - [ ] 5-10 realistic participants
-  - [ ] 2-3 clinical trials with visit templates
-  - [ ] Pre-populated events timeline
-  - [ ] Sample handoff tickets in queue
 
 ---
 
@@ -284,72 +302,84 @@
 |-------------|-------|-------------|
 | `GCP_PROJECT_ID` | | #1 |
 | `GCP_REGION` | | #1 |
-| `CLOUD_SQL_CONNECTION_STRING` | | #2 |
+| `CLOUD_SQL_INSTANCE_CONNECTION` | | #2 |
 | `CLOUD_SQL_PASSWORD` | | #2 |
-| `OPENAI_API_KEY` | | #4 |
-| `ANTHROPIC_API_KEY` | | #5 |
-| `TWILIO_ACCOUNT_SID` | | #6 |
-| `TWILIO_AUTH_TOKEN` | | #6 |
-| `TWILIO_PHONE_NUMBER` | | #6 |
-| `ELEVENLABS_API_KEY` | | #7 |
-| `ELEVENLABS_AGENT_ID` | | #7 |
+| `OPENAI_API_KEY` | | #3 |
+| `TWILIO_ACCOUNT_SID` | | #4 |
+| `TWILIO_AUTH_TOKEN` | | #4 |
+| `TWILIO_PHONE_NUMBER` | | #4 |
+| `ELEVENLABS_API_KEY` | | #5 |
+| `ELEVENLABS_AGENT_ID` | | #5 |
 | `DATABRICKS_SERVER_HOSTNAME` | | #8 |
 | `DATABRICKS_HTTP_PATH` | | #8 |
 | `DATABRICKS_TOKEN` | | #8 |
-| `GOOGLE_CALENDAR_CREDENTIALS` | (JSON file) | #10 |
-| `GOOGLE_CALENDAR_ID` | | #10 |
-| `GITHUB_TOKEN` | | #11 |
+| `GOOGLE_CALENDAR_CREDENTIALS` | (JSON file) | #9 |
+| `GOOGLE_CALENDAR_ID` | | #9 |
+| `GITHUB_TOKEN` | | #10 |
+| `ANTHROPIC_API_KEY` | | #14 |
 
 ---
 
 ## Dependency Graph
 
 ```
-#1 GCP Project
-├── #2 Cloud SQL ──────────────────┐
-├── #3 GCS Bucket                  │
-├── #10 Google Calendar SA         │
-├── #14 Dev Workflow GCP           │
-│   └── #15 Store Secrets ─────── │ ──→ #16 Build Docker Images
-│                                  │         └── #17 GitHub Actions
-#4 OpenAI Key ─────────────────────┤
-#5 Anthropic Key ──────────────────┤
-#6 Twilio ─────────┐               │
-#7 ElevenLabs ─────┤               │
-                   ▼               │
-              #9 Integration ──────┤
-                                   ▼
-                         Claude Code Phase 1-3
-                                   │
-                                   ▼
-                         #12 Dashboard (Lovable)
-                                   │
-                                   ▼
-                         #13 E2E Test Call
-                                   │
-                                   ▼
-                         #18 Demo Prep
+#1 GCP Project ──┐
+#2 Cloud SQL ────┤ (P0 — blocks all coding)
+#3 OpenAI Key ───┘
+        │
+        ▼
+  Claude Code starts building
+        │
+        ├── Meanwhile you do P1:
+        │   #4 Twilio ─────────┐
+        │   #5 ElevenLabs ─────┤
+        │                      ▼
+        │                 #6 Integration
+        │                 #7 GCS Bucket
+        │
+        ├── P2 (as phases need them):
+        │   #8 Databricks (Phase 1 analytics)
+        │   #9 Google Calendar SA (Phase 2)
+        │   #10 GitHub PAT (Phase 4)
+        │   #11 Dashboard via Lovable (Phase 4)
+        │   #12 E2E Test Call (Phase 5)
+        │   #13 Demo Prep (Phase 5)
+        │
+        └── P3 (post-hackathon):
+            #14 Anthropic Key
+            #15 Secret Manager
+            #16 Docker Images
+            #17 GitHub Actions
 ```
 
 ---
 
-## Quick Start (Optimal Order)
+## Quick Start
 
-If you want to minimize wall-clock time, do these in parallel tracks:
+**Right now (3 items in parallel, ~15 min):**
 
-**Track A** (cloud infra — ~30 min):
-`#1 → #2 + #3 (parallel) → #14 → #15`
+| You do | Time |
+|--------|------|
+| #1 Create GCP project + enable 7 APIs | 10 min |
+| #2 Create Cloud SQL instance + install Auth Proxy | 10 min |
+| #3 Get OpenAI API key | 5 min |
 
-**Track B** (API keys — ~15 min, parallel with Track A):
-`#4 + #5 (parallel)`
+**Then hand credentials to Claude Code. Coding starts.**
 
-**Track C** (voice — ~70 min, parallel with Track A):
-`#6 + #7 (parallel) → #9`
+**While Claude Code builds Phase 1 (~2 hours), you do:**
 
-**Track D** (data platform — ~15 min, parallel with all):
-`#8`
+| You do | Time |
+|--------|------|
+| #4 + #5 Twilio + ElevenLabs (parallel) | 15 min |
+| #6 Wire them together + test call | 45 min |
+| #7 GCS bucket | 5 min |
+| #8 Databricks workspace | 15 min |
 
-**After Tracks A-D complete**: Hand secrets to Claude Code → development begins
+**When Claude Code reaches Phase 2:**
+`#9 Google Calendar SA`
 
-**Later** (during/after coding):
-`#10 → #11 → #12 → #13 → #16 + #17 → #18`
+**When Claude Code reaches Phase 4:**
+`#10 GitHub PAT → #11 Lovable Dashboard`
+
+**After deployment:**
+`#12 E2E Test → #13 Demo Prep`

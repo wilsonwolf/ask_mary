@@ -67,7 +67,12 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <step id="S1" name="outreach_and_consent">
       <description>
         Initiate contact with trial-eligible participants from roster/EHR data.
-        Enforce DNC flags (DNC_ALL, DNC_SMS, DNC_VOICE) before any outbound.
+        Enforce DNC flags (DNC_ALL, DNC_SMS, DNC_VOICE, DNC_WHATSAPP) before any outbound.
+        DNC sources: (1) internal DB flags, (2) Twilio opt-out status sync (Advanced Opt-Out).
+        Both sources checked — if either says DNC, channel is blocked.
+        SMS/WhatsApp STOP keyword handling: on inbound "STOP", immediately set DNC flag
+        for that channel in DB + log event. Twilio handles carrier-level opt-out natively,
+        but we also track independently for audit + cross-channel enforcement.
         Mention transport support early to increase conversion.
         Retry cadence: Voice #1 → SMS nudge → Voice #2 (diff time) → Voice #3 + final SMS.
         Log each attempt + outcome in events table.
@@ -205,10 +210,13 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         Fields: participant_id, reason, severity, summary, recommended_next_action,
         created_at, due_at, coordinator_phone, callback_number, priority,
         language, preferred_callback_window.
-        SLA: HANDOFF_NOW (safety) → immediate. CALLBACK_TICKET → 2 business hours.
+        SLA: HANDOFF_NOW (safety) → immediate live transfer via Twilio warm transfer
+        to coordinator_phone + dashboard alert. CALLBACK_TICKET → 2 business hours.
         Handoff packet: identity status, consent+DNC flags, screening answers,
         conflicts, appointment/transport details, language.
-        MVP: surface in dashboard. Post-MVP: trigger outbound alert to coordinator.
+        HANDOFF_NOW during voice call: Twilio Conference + warm transfer (agent stays
+        on line briefly, introduces coordinator, then drops). Non-voice: immediate
+        outbound call to coordinator_phone with context.
       </description>
       <data_sources>handoff_queue (Postgres)</data_sources>
     </step>
@@ -284,7 +292,12 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <frontend generator="Lovable" framework="React/TypeScript" host="Firebase Hosting"/>
     <observability primary="Langfuse" secondary="Databricks MLflow"/>
     <deployment platform="Google Cloud Run" containerization="Docker" registry="Artifact Registry"/>
-    <job_queue platform="Cloud Tasks" purpose="Timed reminders, slot expiry, re-check scheduling"/>
+    <job_queue platform="Cloud Tasks" purpose="Timed reminders, slot expiry, re-check scheduling">
+      <idempotency>Every Cloud Task carries a task_idempotency_key. The worker checks
+        this key against the events table before executing. If the key exists, the task
+        is a duplicate (from retry/delay) and is skipped. This prevents duplicate calls,
+        texts, or transport bookings caused by microservice delays or Cloud Tasks retries.</idempotency>
+    </job_queue>
     <ci_cd git="worktrees" branching="main(prod)/dev/feature" rollback="gradual"/>
   </tech_stack>
 
@@ -718,17 +731,19 @@ graph LR
 
 ### 4.1 Verified APIs and MCP Servers
 
-| Service | API Available | MCP Server | Python SDK | Auth | HIPAA Ready | Notes |
+> **MVP NOTE**: The MVP uses **synthetic data only** — no real PHI. HIPAA/BAA compliance is documented below for production readiness planning but is **not required for the MVP demo**. When transitioning to real patient data, all vendor tiers must be verified and BAAs executed.
+
+| Service | API Available | MCP Server | Python SDK | Auth | HIPAA Capable | BAA Requirement for Production |
 |---------|:---:|:---:|:---:|------|:---:|-------|
-| **ElevenLabs** | Yes | N/A (native integration) | `elevenlabs` | API key | **Yes** (Enterprise tier) | Conv AI 2.0 with native Twilio integration. Sub-second latency. BAA available on Enterprise plan. Zero-retention mode + TLS encryption + PHI recognition. |
-| **Twilio** | Yes | Yes (official Alpha) | `twilio` | Account SID + Auth Token | **Yes** (Security/Enterprise Edition) | SMS, WhatsApp, Voice all HIPAA-eligible. BAA requires Security or Enterprise Edition. Programmable Voice, SIP, SMS all covered. |
-| **Uber Health** | Yes | No (build custom or REST) | REST API | OAuth2 (Uber for Business) | **Yes** (native) | Built specifically for healthcare. HIPAA-compliant endpoint. ePHI controls built-in. Patients don't need Uber account. **Requires partnership/account.** |
-| **Google Calendar** | Yes | Yes (multiple community) | `google-api-python-client` | OAuth2 (service account) | **Partial** (with BAA) | Covered under Google Workspace BAA as of Sep 2025. **Caveat**: Third-party API access (our MCP server) is NOT covered by Google's BAA — we must treat calendar data carefully. |
-| **Databricks** | Yes | Yes (managed + community) | `databricks-sql-connector` | Token/OAuth | **Yes** (Compliance Security Profile) | BAA available. Compliance Security Profile enables HIPAA. Encryption at rest + in transit. SQL Serverless is HIPAA certified on AWS and Azure. |
-| **OpenAI API** | Yes | Built-in MCP support | `openai-agents` | API key | **Yes** (with BAA + zero retention) | BAA available (email baa@openai.com). Requires zero-retention API endpoints. Not limited to Enterprise plan. |
-| **Langfuse** | Yes | N/A | `langfuse` | API key | **Yes** (Cloud or self-hosted) | HIPAA-compliant cloud region available. BAA offered. Self-hosted option for full control. PHI safeguards documented. |
-| **Cloud SQL (Postgres)** | Yes | N/A | `asyncpg` + `SQLAlchemy` | IAM/password | **Yes** (with BAA) | GCP HIPAA-eligible. Encryption at rest + in transit. Row-level security, ACID transactions, sub-ms latency. |
-| **Google Cloud Run** | Yes | N/A | `google-cloud-run` | IAM/Service Account | **Yes** (with BAA) | GCP is HIPAA-eligible. Cloud Run covered under GCP BAA. Encryption at rest + in transit. IAM + VPC Service Controls available. |
+| **ElevenLabs** | Yes | N/A (native integration) | `elevenlabs` | API key | **Yes** (Enterprise tier) | Enterprise plan required. BAA available. Zero-retention mode + TLS + PHI recognition. |
+| **Twilio** | Yes | Yes (official Alpha) | `twilio` | Account SID + Auth Token | **Yes** (Security/Enterprise Edition) | Security or Enterprise Edition required. BAA covers Voice, SIP, SMS. |
+| **Uber Health** | Yes | No (build custom or REST) | REST API | OAuth2 (Uber for Business) | **Yes** (native) | Built for healthcare. ePHI controls built-in. **Requires enterprise partnership.** |
+| **Google Calendar** | Yes | Yes (multiple community) | `google-api-python-client` | OAuth2 (service account) | **Partial** | Google Workspace BAA covers Calendar. **Caveat**: Third-party API access (MCP server) NOT covered — treat calendar data carefully. |
+| **Databricks** | Yes | Yes (managed + community) | `databricks-sql-connector` | Token/OAuth | **Yes** (Compliance Security Profile) | Compliance Security Profile enables HIPAA. BAA available. |
+| **OpenAI API** | Yes | Built-in MCP support | `openai-agents` | API key | **Yes** (with BAA + zero retention) | BAA available (baa@openai.com). Requires zero-retention endpoints. |
+| **Langfuse** | Yes | N/A | `langfuse` | API key | **Yes** (Cloud or self-hosted) | HIPAA cloud region available. Self-hosted for full control. |
+| **Cloud SQL (Postgres)** | Yes | N/A | `asyncpg` + `SQLAlchemy` | IAM/password | **Yes** (with BAA) | GCP HIPAA-eligible. Covered under GCP BAA. |
+| **Google Cloud Run** | Yes | N/A | `google-cloud-run` | IAM/Service Account | **Yes** (with BAA) | GCP HIPAA-eligible. Covered under GCP BAA. |
 
 
 ### 4.2 Uber Health: Hackathon Mitigation
@@ -787,11 +802,11 @@ ElevenLabs handles the **voice layer**:
 graph LR
     subgraph "Cloud SQL Postgres (OLTP)"
         direction TB
-        PG["Operational State<br/>• participants<br/>• appointments<br/>• conversations<br/>• events (append-only)<br/>• handoff_queue<br/>• rides"]
+        PG["Operational State<br/>• participants<br/>• participant_trials<br/>• appointments<br/>• conversations<br/>• agent_reasoning<br/>• events (append-only)<br/>• handoff_queue<br/>• rides"]
     end
 
     subgraph "Pub/Sub Event Bridge"
-        PS["CDC Events<br/>• events.* (all types)<br/>• conversation.ended<br/>• appointment.status_changed<br/>• handoff.created"]
+        PS["App-Level Publisher<br/>(not native CDC)<br/>• events.* (all types)<br/>• conversation.ended<br/>• appointment.status_changed<br/>• handoff.created<br/>+ periodic sweep for stragglers"]
     end
 
     subgraph "Databricks Delta Lake (OLAP)"
@@ -829,22 +844,25 @@ These tables require transactional guarantees, low-latency access, and strong co
 
 ```mermaid
 erDiagram
+    PARTICIPANTS ||--o{ PARTICIPANT_TRIALS : enrolled_in
     PARTICIPANTS ||--o{ CONVERSATIONS : has
     PARTICIPANTS ||--o{ APPOINTMENTS : has
     PARTICIPANTS ||--o{ RIDES : has
     PARTICIPANTS ||--o{ EVENTS : generates
     PARTICIPANTS ||--o{ HANDOFF_QUEUE : triggers
+    PARTICIPANT_TRIALS }o--|| PARTICIPANTS : belongs_to
     APPOINTMENTS ||--o{ RIDES : has
     APPOINTMENTS ||--o{ EVENTS : generates
+    CONVERSATIONS ||--o{ AGENT_REASONING : has
 
     PARTICIPANTS {
         uuid participant_id PK
-        string trial_id FK
+        string mary_id UK "internal ID: hash(first_name, last_name, dob, phone)"
         string agency_id
         string first_name
         string last_name
         date date_of_birth
-        string phone UK
+        string phone "not unique — caregivers/family may share"
         string secondary_phone
         string address_street
         string address_city
@@ -856,12 +874,8 @@ erDiagram
         string best_time_to_reach
         string language
         string identity_status "unverified|verified|wrong_person"
-        string eligibility_status "pending|eligible|provisional|ineligible|needs_human"
-        float eligibility_confidence
         string pipeline_status "new|outreach|screening|scheduling|booked|confirmed|completed|no_show|cancelled|unreachable|dnc"
-        jsonb screening_responses "annotated answers with provenance"
-        jsonb ehr_discrepancies "flagged mismatches vs EHR"
-        jsonb dnc_flags "DNC_ALL, DNC_SMS, DNC_VOICE per channel"
+        jsonb dnc_flags "DNC_ALL, DNC_SMS, DNC_VOICE, DNC_WHATSAPP per channel + twilio_opt_out_synced"
         jsonb contactability "ok_to_leave_voicemail, permitted_voicemail_name, etc."
         jsonb consent "disclosed_automation, consent_to_continue, consent_sms, consent_future_trials"
         jsonb caregiver "authorized_contact, relationship, scope, phone"
@@ -870,8 +884,6 @@ erDiagram
         timestamptz next_action_at
         string next_action_type "outreach_retry|reverify|confirmation_check|follow_up"
         timestamptz recheck_scheduled_at
-        boolean adversarial_recheck_done
-        jsonb adversarial_results
         timestamp created_at
         timestamp updated_at
     }
@@ -912,8 +924,7 @@ erDiagram
         float duration_seconds
         string status "active|completed|failed|transferred"
         jsonb full_transcript "ordered array of turns with speaker, text, timestamp"
-        jsonb agent_reasoning "agent decisions + tool calls during conversation"
-        jsonb summary "structured summary: outcome, next_steps, flags"
+        jsonb summary "structured summary: outcome, next_steps, flags (NO internal reasoning)"
         string handoff_reason "null if no handoff occurred"
         timestamp started_at
         timestamp ended_at
@@ -969,12 +980,42 @@ erDiagram
         timestamp created_at
         timestamp updated_at
     }
+
+    AGENT_REASONING {
+        uuid reasoning_id PK
+        uuid conversation_id FK
+        uuid participant_id FK
+        string agent_name
+        jsonb reasoning_trace "agent decisions, tool calls, internal prompts"
+        jsonb tool_calls "ordered list of tool invocations + results"
+        jsonb safety_gate_log "safety gate evaluation trace"
+        timestamp created_at
+    }
+
+    PARTICIPANT_TRIALS {
+        uuid participant_trial_id PK
+        uuid participant_id FK
+        string trial_id FK
+        string enrollment_status "screening|eligible|enrolled|completed|withdrawn|ineligible"
+        string eligibility_status "pending|eligible|provisional|ineligible|needs_human"
+        float eligibility_confidence
+        jsonb screening_responses "annotated answers with provenance per trial"
+        jsonb ehr_discrepancies "flagged mismatches vs EHR per trial"
+        boolean adversarial_recheck_done
+        jsonb adversarial_results
+        timestamp enrolled_at
+        timestamp created_at
+        timestamp updated_at
+    }
 ```
 
 **Key Postgres features used:**
 - `uuid` primary keys (no sequential leaks)
-- `UK` = UNIQUE constraints (prevent duplicate phone, double-booking, duplicate events via idempotency_key)
-- `jsonb` for flexible data: screening responses (with provenance annotations), DNC flags, contactability, consent, caregiver info, handoff packets
+- `mary_id` = deterministic internal identifier: `hash(first_name, last_name, dob, phone)` — enables dedup while allowing shared phone numbers (caregivers/family)
+- `participant_trials` junction table enables multi-trial enrollment — a participant can be screening for Trial A while enrolled in Trial B
+- `phone` is NOT unique — multiple participants (e.g. family members, caregiver-managed) can share a phone number; identity is resolved via `mary_id`
+- `UK` = UNIQUE constraints (mary_id, double-booking via appointment slots, duplicate events via idempotency_key)
+- `jsonb` for flexible data: DNC flags (with Twilio opt-out sync), contactability, consent, caregiver info, handoff packets; screening responses live on `participant_trials` (per-trial)
 - `timestamptz` for timezone-aware scheduling; all times stored UTC, rendered in participant/site timezone
 - `slot_held_until` on appointments enables `SELECT ... FOR UPDATE` reservation pattern
 - `confirmation_due_at` on appointments drives the 12-hour confirmation window (Cloud Tasks checks at T+11h and T+12h)
@@ -983,7 +1024,8 @@ erDiagram
 - `pipeline_status` on participants tracks current workflow state across the full lifecycle
 - `provenance` field on events distinguishes data source (patient_stated vs ehr vs coordinator vs system)
 - `idempotency_key` on events prevents duplicate outbound actions (SMS, voice, transport bookings)
-- Single `participants` table consolidates identity, screening, contactability, and consent — avoids JOINs on the hot path
+- `agent_reasoning` stored in separate `AGENT_REASONING` table — never commingled with conversation data (PHI/audit isolation)
+- Single `participants` table consolidates identity, contactability, and consent — screening data lives on `participant_trials` per-trial
 
 ### 6.2 Analytics Tables (Databricks Delta Lake)
 
@@ -1033,7 +1075,6 @@ erDiagram
         string direction
         string agent_name
         json full_transcript
-        json agent_reasoning
         float duration_seconds
         string sentiment_score
         json topic_tags
@@ -1056,9 +1097,29 @@ erDiagram
     }
 ```
 
-**What flows from Postgres → Databricks via Pub/Sub:**
+**How data flows from Postgres → Databricks (App-Level Event Publisher):**
+
+Cloud SQL does not emit CDC to Pub/Sub natively. Instead of Datastream or Debezium (complex for MVP), we use an **app-level event publisher** — the application code publishes to Pub/Sub explicitly after each write:
+
+```python
+# Pattern: every service method that writes to Postgres also publishes to Pub/Sub
+async def book_appointment(participant_id, slot, ...):
+    async with db.transaction():
+        appointment = await db.insert(appointments, ...)
+        event = await db.insert(events, type="slot_booked", ...)
+    # After commit, publish to Pub/Sub (fire-and-forget with retry)
+    await pubsub.publish("ask-mary-events", {
+        "type": "slot_booked",
+        "event_id": event.event_id,
+        "payload": {...}
+    })
+```
+
+A Databricks Auto Loader job (or Pub/Sub → Cloud Function → Delta Lake) ingests from the topic. If Pub/Sub publish fails, events are still in Postgres and a periodic sweep job catches stragglers.
+
+**What flows:**
 - **Events** (all types) → append to events Delta table for analytics (outreach patterns, conversion funnels, no-show reasons)
-- **Conversations** (after call ends) → `conversations_archive` with full transcript + agent reasoning for ML analysis
+- **Conversations** (after call ends) → `conversations_archive` with full transcript (no agent_reasoning — stored separately) for ML analysis
 - **Appointment status changes** → reporting dashboards (confirmation rates, no-show rates, scheduling patterns)
 - **Handoff events** → coordinator workload analysis, SLA compliance tracking
 
@@ -1066,6 +1127,7 @@ erDiagram
 - `trials` — reference data (criteria, visit templates, geo limits), loaded once, read by agents at call start
 - `participant_ehr` — imported from EHR systems, too large/complex for OLTP, used for cross-reference in screening
 - `audit_log` — write-heavy, append-only, analyzed in batch by supervisor agent
+- **Note**: `agent_reasoning` is NOT archived to Databricks — it stays in Postgres with strict access controls, separate from conversation data
 - ML models and feature tables (no-show prediction, best contact time/channel, eligibility scoring)
 
 ### 6.3 Audio Storage (GCS)
@@ -1118,7 +1180,7 @@ graph TD
         A["Agent generates response"] --> SG{"Safety Gate<br/>(blocking pre-check<br/>&lt;200ms)"}
         SG -->|"medical advice,<br/>symptoms, AE,<br/>consent confusion,<br/>anger/threats,<br/>language mismatch"| HQ["Write to<br/>handoff_queue"]
         HQ --> HQ_NOW{"Severity?"}
-        HQ_NOW -->|HANDOFF_NOW| XFER["Immediate transfer<br/>to coordinator"]
+        HQ_NOW -->|HANDOFF_NOW| XFER["Immediate warm transfer<br/>via Twilio call forwarding<br/>to coordinator_phone<br/>+ dashboard alert"]
         HQ_NOW -->|CALLBACK_TICKET| TICKET["Queue callback<br/>(2h SLA)"]
         HQ_NOW -->|STOP_CONTACT| STOP["End conversation<br/>+ suppress outreach"]
 
@@ -1157,12 +1219,13 @@ tests/
   safety/                              # IMMUTABLE — locked in CI
     test_no_phi_before_identity.py       # PHI never shared pre-verification (G2)
     test_disclosure_before_proceed.py    # Disclosure gate enforced before conversation (G1)
-    test_dnc_enforcement.py              # DNC flags block outbound on correct channels
+    test_dnc_enforcement.py              # DNC flags block outbound on correct channels (internal + Twilio opt-out sync)
+    test_dnc_stop_keyword.py             # Inbound "STOP" sets DNC flag in DB + logs event + Twilio sync
     test_identity_verification.py        # DOB + ZIP flow, duplicate detection, wrong_person handling
     test_eligibility_boundaries.py       # Edge cases in inclusion/exclusion criteria
     test_deception_detection.py          # Known deception patterns caught by adversarial checker
     test_handoff_triggers.py             # All 7 handoff trigger types fire correctly
-    test_handoff_latency.py              # Safety gate completes in <200ms
+    test_handoff_latency.py              # Safety gate latency logged + asserted (see 7.5 Latency Harness)
     test_consent_withdrawal_stops.py     # Consent withdrawal → STOP_CONTACT, suppress outreach
     test_provenance_annotation.py        # Corrections annotate, never overwrite source data
     test_idempotency_keys.py             # Duplicate outbound actions blocked by idempotency_key
@@ -1222,6 +1285,45 @@ Each scenario defines:
 - **Failure criteria**: What must NOT happen
 - **Scoring**: Pass/fail + continuous metrics (empathy score, accuracy, latency)
 
+### 7.5 Safety Gate Latency Harness
+
+The <200ms safety gate target is aspirational — actual latency depends on implementation complexity. Rather than hard-fail, we **measure, log, and make observable**:
+
+**Instrumentation (built into safety_gate):**
+```python
+import time
+from langfuse import trace
+
+async def safety_gate(response: str, context: dict) -> SafetyResult:
+    start = time.perf_counter()
+    result = await _evaluate_safety(response, context)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+
+    # Always log — observable in Langfuse + structured logs
+    trace.event(
+        name="safety_gate",
+        metadata={
+            "elapsed_ms": elapsed_ms,
+            "triggered": result.triggered,
+            "severity": result.severity,
+            "over_budget": elapsed_ms > 200,
+        }
+    )
+    logger.info("safety_gate", elapsed_ms=elapsed_ms, triggered=result.triggered)
+    return result
+```
+
+**Test harness (`test_handoff_latency.py`):**
+- Runs safety gate against all 7 trigger types + 10 benign inputs
+- Logs p50, p95, p99 latency for each
+- **Warns** (not fails) if p95 > 200ms — allows us to measure before enforcing
+- **Fails** if p95 > 1000ms (hard ceiling — user-perceptible delay)
+
+**Dashboard visibility:**
+- Langfuse trace view: filter by `safety_gate` events, sort by `elapsed_ms`
+- Structured logs: `jq '.elapsed_ms'` for quick CLI inspection
+- Alert: Langfuse webhook if p95 > 500ms over any 5-minute window
+
 ---
 
 ## 8. DevOps & Deployment
@@ -1262,7 +1364,7 @@ on PR to main:
 | Service | Type | Port | GCP Resource | Notes |
 |---------|------|------|-------------|-------|
 | `ask-mary-api` | Web (Cloud Run) | 8000 | `us-central1` | FastAPI — handles webhooks, REST endpoints. Min instances: 1 (avoid cold start for Twilio webhooks). |
-| `ask-mary-worker` | Worker (Cloud Run) | — | `us-central1` | Background tasks: reminders, Uber booking, audits. Triggered by Cloud Tasks or Pub/Sub. Min instances: 0. |
+| `ask-mary-worker` | Worker (Cloud Run) | — | `us-central1` | Background tasks: reminders, Uber booking, audits. Triggered by Cloud Tasks or Pub/Sub. Min instances: 0. **Dedup guard**: every handler checks `task_idempotency_key` against events table before executing — prevents duplicate calls/texts from retries. |
 | `ask-mary-dashboard` | Static (Firebase Hosting) | 443 | Global CDN | React app from Lovable. Alternatively, serve as Cloud Run service. |
 
 **GCP Services Used**:
@@ -1296,8 +1398,8 @@ on PR to main:
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
 | 1.1 Project scaffolding | Claude Code | 30 min | FastAPI project structure, pyproject.toml, Dockerfile, Cloud Run config, `comms_templates/` dir with YAML stubs |
-| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, appointments, conversations, events, handoff_queue, rides |
-| 1.3 Operational DB module | Claude Code | 40 min | `db/postgres.py` — SQLAlchemy models + asyncpg CRUD. Events table append-only (no UPDATE/DELETE). Idempotency key enforcement. |
+| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides. mary_id generation trigger. |
+| 1.3 Operational DB module | Claude Code | 40 min | `db/postgres.py` — SQLAlchemy models + asyncpg CRUD. Events table append-only (no UPDATE/DELETE). Idempotency key enforcement. Cloud Tasks dedup guard (task_idempotency_key check). Twilio DNC opt-out sync. |
 | 1.4 Databricks analytics tables | Claude Code | 20 min | Create Delta Lake tables (trials, participant_ehr, conversations_archive, audit_log), seed with test trial/EHR data |
 | 1.5 Analytics DB module | Claude Code | 15 min | `db/databricks.py` — read-only connector for trial criteria, EHR lookups, geo distance limits |
 | 1.6 GCS audio bucket setup | Claude Code | 10 min | Create `ask-mary-audio` bucket, IAM policies, signed URL helper function |
@@ -1413,7 +1515,7 @@ gantt
 | Google Calendar MCP not covered by Google BAA | Medium | Medium | Don't store PHI in calendar event titles/descriptions; use opaque reference IDs only |
 | Confirmation window complexity (12h timeout + slot release) | Medium | Medium | Cloud Tasks handles timing; slot_held_until enforced by DB constraint; test thoroughly with time simulation |
 | Events table grows large quickly | Low | Medium | Append-only by design; partition by month; Pub/Sub streams to Databricks for long-term storage; Postgres only needs recent events |
-| Handoff queue SLA missed (HANDOFF_NOW not immediate) | Low | High | Dashboard polling initially; post-MVP: push notification to coordinator device |
+| Handoff queue SLA missed (HANDOFF_NOW not immediate) | Low | High | Voice calls: Twilio warm transfer (Conference API) to coordinator_phone in real-time. Non-voice: immediate outbound call + dashboard alert. Fallback: SMS to coordinator if call fails. |
 | Comms template rendering errors | Low | Medium | Validate all templates at startup; unit test every template with sample data; Jinja2 strict mode |
 | GCS audio storage costs | Low | Low | Lifecycle policy: move to Coldline after 90 days; retention per-trial policy |
 | DNC flag race condition (outbound in flight when DNC set) | Low | Medium | Idempotency keys + events log prevent duplicate delivery; check DNC at send-time, not just schedule-time |
