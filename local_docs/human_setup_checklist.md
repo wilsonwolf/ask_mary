@@ -172,43 +172,30 @@
 - [ ] Set expiration (90 days recommended)
 - [ ] Note **GITHUB_TOKEN**: `___________________________`
 
-### 11. Create Dashboard with Lovable (~60 min)
-
-> Needed by: Phase 4 (frontend)
-> Can start once Phase 2 API endpoints exist
-
-- [ ] Go to [lovable.dev](https://lovable.dev)
-- [ ] Generate React/TypeScript dashboard with these screens:
-  - [ ] **Participant pipeline** — status view (new → outreach → screening → scheduling → confirmed → completed/no-show)
-  - [ ] **Appointments list** — filterable by date range, status, trial
-  - [ ] **Handoff queue** — open coordinator tickets with severity + SLA due time
-  - [ ] **Conversation logs** — searchable by participant, date, outcome; audio playback controls
-  - [ ] **Events timeline** — append-only log visualization
-  - [ ] **Analytics summary** — conversion rates, no-show rates, scheduling patterns
-- [ ] Export generated code
-- [ ] Hand code to Claude Code for API integration
-
-### 12. Run End-to-End Test Call (~30 min)
+### 11. Run Demo per `local_docs/demo_script.md` (~30 min)
 
 > Needed by: Phase 5 (demo validation)
 > Requires: Full system deployed to Cloud Run
+> This is the **success gate** — see `local_docs/demo_script.md` for the full script
 
-- [ ] Call the Twilio phone number from a real phone
-- [ ] Walk through the full participant flow:
-  - [ ] 1. Receive disclosure, give verbal consent
-  - [ ] 2. Verify identity (DOB + ZIP)
-  - [ ] 3. Answer screening questions
-  - [ ] 4. Select appointment time
-  - [ ] 5. Confirm appointment details
-- [ ] Verify in dashboard:
-  - [ ] Participant record created with correct data
-  - [ ] Appointment booked with correct time
-  - [ ] Conversation logged with transcript
-  - [ ] Events logged in timeline
-  - [ ] Audio recording saved to GCS
+- [ ] Click "Start Demo Call" on dashboard
+- [ ] Answer on speaker, walk through the 60-second demo flow:
+  - [ ] 1. Disclosure + consent (press 1)
+  - [ ] 2. Identity verification (enter DOB year + ZIP via DTMF)
+  - [ ] 3. Screening questions (press 1/2 for yes/no)
+  - [ ] 4. Calendar availability shown, select slot
+  - [ ] 5. Teach-back confirmation
+  - [ ] 6. Transport booking
+- [ ] Verify dashboard updates in real-time:
+  - [ ] Call & Safety Gates panel shows flags flipping
+  - [ ] Eligibility panel shows answers + status
+  - [ ] Scheduling panel shows HELD → BOOKED
+  - [ ] Transport panel shows REQUESTED → CONFIRMED
+  - [ ] Events feed scrolls with every action
+- [ ] (Optional) Safety escalation: say "chest pain" → verify handoff_queue entry
 - [ ] Note any issues for Claude Code to fix: `___________________________`
 
-### 13. Demo Prep (~30 min)
+### 12. Demo Prep (~30 min)
 
 > Last step before the demo
 
@@ -341,9 +328,8 @@
         │   #8 Databricks (Phase 1 analytics)
         │   #9 Google Calendar SA (Phase 2)
         │   #10 GitHub PAT (Phase 4)
-        │   #11 Dashboard via Lovable (Phase 4)
-        │   #12 E2E Test Call (Phase 5)
-        │   #13 Demo Prep (Phase 5)
+        │   #11 Demo dry run (Phase 5)
+        │   #12 Demo Prep (Phase 5)
         │
         └── P3 (post-hackathon):
             #14 Anthropic Key
@@ -379,7 +365,7 @@
 `#9 Google Calendar SA`
 
 **When Claude Code reaches Phase 4:**
-`#10 GitHub PAT → #11 Lovable Dashboard`
+`#10 GitHub PAT`
 
 **After deployment:**
-`#12 E2E Test → #13 Demo Prep`
+`#11 Demo dry run (per local_docs/demo_script.md) → #12 Demo Prep`

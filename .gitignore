@@ -1,1 +1,42 @@
 local_docs/workflow_script_v2.md
+
+# Environment
+.env
+.env.*
+*.env
+
+# Ralph Wiggum marker
+.ralph-complete
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Architecture diagrams (auto-generated)
+docs/architecture/*.d2
+docs/architecture/*.svg
+
+# jscpd reports
+.jscpd-report.json

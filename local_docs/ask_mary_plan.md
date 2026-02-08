@@ -17,6 +17,8 @@
 9. [12-Hour Implementation Plan](#9-12-hour-implementation-plan)
 10. [Risk Register](#10-risk-register)
 11. [Open Questions](#11-open-questions)
+12. [Human Pre-Setup Checklist](#12-human-pre-setup-checklist) → `local_docs/human_setup_checklist.md`
+13. [Live Demo Script & Success Criteria](#13-live-demo-script) → `local_docs/demo_script.md`
 
 ---
 
@@ -1434,19 +1436,24 @@ on PR to main:
 
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
-| 4.1 Dashboard (Lovable) | Human + Lovable | 60 min | React dashboard: participant pipeline, appointments, handoff_queue (open tickets), conversation logs with audio playback, events timeline |
-| 4.2 Dashboard API endpoints | Claude Code | 30 min | REST endpoints: participants list/detail, appointments, handoff_queue, conversations, events, analytics summary |
+| 4.1 Demo dashboard (React + WebSocket) | Claude Code | 90 min | Real-time demo dashboard per `local_docs/demo_script.md`: 4 panels (Call & Safety Gates, Eligibility, Scheduling, Transport) + scrolling events feed. WebSocket push from FastAPI for live updates during calls. "Start Demo Call" button triggers outbound Twilio call. |
+| 4.2 Dashboard API endpoints | Claude Code | 30 min | REST + WebSocket endpoints: participants list/detail, appointments, handoff_queue, conversations, events, analytics summary. WebSocket broadcasts events as they happen for real-time dashboard. |
 | 4.3 Pub/Sub event bridge | Claude Code | 20 min | CDC from Postgres events/conversations/appointments → Databricks via Pub/Sub |
 | 4.4 Deploy to GCP Cloud Run | Claude Code | 30 min | Docker build, push to Artifact Registry, deploy Cloud Run services, set env vars via Secret Manager |
 | 4.5 End-to-end test call | Human | 30 min | Call the Twilio number, run through full flow: outreach → screening → booking → confirmation |
 
-### Phase 5: Demo Prep (Hours 11-12)
+### Phase 5: Demo Validation (Hours 11-12)
+
+> **The demo script in `local_docs/demo_script.md` defines the success criteria for the entire project.**
+> Phase 5 is not complete until the demo runs end-to-end without interruption.
 
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
-| 5.1 Fix blockers from E2E test | Claude Code | 30 min | Whatever broke |
-| 5.2 Demo script | Human | 15 min | Write talking points: show happy path, handoff trigger, no-show rescue |
-| 5.3 Seed compelling demo data | Claude Code | 15 min | Realistic participants/trials, pre-populated events timeline, sample handoff tickets |
+| 5.1 Seed demo data | Claude Code | 15 min | Create "Diabetes Study A" trial in Databricks with inclusion/exclusion criteria, visit templates, calendar slots. Create synthetic participant record. Seed coordinator phone for handoff. |
+| 5.2 Demo dry run | Human + Claude Code | 30 min | Run the full 60-second demo per `local_docs/demo_script.md`. Call Twilio number, walk through disclosure → identity → screening → booking → transport → comms. Verify dashboard updates in real-time. |
+| 5.3 Fix blockers from dry run | Claude Code | 30 min | Fix whatever broke in 5.2. Common issues: WebSocket disconnect, event ordering, voice latency, DTMF capture timing, slot booking race condition. |
+| 5.4 Safety escalation test | Human | 5 min | Run the optional 10-second safety escalation add-on: say "chest pain" → verify handoff_queue entry appears on dashboard with severity=HIGH. |
+| 5.5 Final demo run | Human | 2 min | One clean, uninterrupted run of the full demo. If this succeeds, the project is complete. |
 
 ### Critical Path
 
@@ -1485,15 +1492,18 @@ gantt
     Integration tests             :s4, after s1, 20m
 
     section Frontend & Integration
-    Dashboard (Lovable)           :d1, after a5, 60m
-    Dashboard API                 :d2, after a5, 30m
+    Demo Dashboard (React+WS)     :d1, after a5, 90m
+    Dashboard API + WebSocket     :d2, after a5, 30m
     Pub/Sub event bridge          :d2b, after d2, 20m
     Deploy to Cloud Run           :d3, after d2b, 30m
     E2E test call                 :d4, after d3, 30m
 
-    section Demo
-    Fix blockers                  :e1, after d4, 30m
-    Demo prep                     :e2, after e1, 30m
+    section Demo Validation
+    Seed demo data                :e0, after d3, 15m
+    Demo dry run                  :e1, after d4, 30m
+    Fix blockers                  :e2, after e1, 30m
+    Safety escalation test        :e3, after e2, 5m
+    Final demo run (SUCCESS)      :e4, after e3, 2m
 ```
 
 ---
@@ -1655,6 +1665,44 @@ These items require manual human action before the hackathon clock starts:
 | OpenAI API key | P0 | 5 min | For Agents SDK |
 | Anthropic API key | P0 | 5 min | For Claude Code dev workflow |
 | GitHub repo access tokens | P1 | 5 min | Fine-grained PAT for CI/CD |
+
+---
+
+## 13. Live Demo Script & Success Criteria
+
+> **Full demo script**: `local_docs/demo_script.md`
+
+The live demo is the **ultimate success gate** for the project. It must run end-to-end without interruption.
+
+**Title**: "Mary schedules a clinical trial visit + transport in 60 seconds"
+
+**What it proves**:
+- Real telephony (Twilio outbound call to a real phone)
+- Safety gates (disclosure, consent, identity verification via DTMF)
+- Core workflow (screening → calendar query → appointment booking)
+- Retention value (transport + comms cadence scheduled)
+- Real-time observability (dashboard updates via WebSocket as call progresses)
+
+**Dashboard layout** (4 panels + events feed):
+1. **Call & Safety Gates** — call status, disclosure/consent/identity flags, DNC status
+2. **Eligibility** — trial name, screening questions with answers, eligibility status
+3. **Scheduling** — availability spinner, slot list, HELD → BOOKED status
+4. **Transport** — pickup ZIP, status progression, fake ETA/ride ID
+5. **Events feed** — scrolling real-time log of every system event
+
+**Success criteria** (all must be true in a single uninterrupted run):
+1. Outbound call connects via Twilio to a real phone
+2. ElevenLabs voice agent delivers disclosure and captures consent
+3. Identity verification completes (DOB year + ZIP via DTMF)
+4. Screening questions answered and eligibility determined
+5. Calendar availability queried and appointment booked
+6. Transport requested and confirmed
+7. Comms cadence scheduled (T-48h, T-24h, T-2h)
+8. Dashboard updates in real-time for every step
+9. Events feed shows complete audit trail
+10. (Optional) Safety escalation triggers handoff queue entry
+
+**Implementation note**: The dashboard is built by Claude Code (not Lovable) because the real-time WebSocket behavior is the core of what makes the demo compelling. React frontend with FastAPI WebSocket backend pushing events as they happen.
 
 ---
 

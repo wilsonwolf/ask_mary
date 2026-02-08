@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/protect-immutable.sh",
+            "statusMessage": "Checking immutable test protection..."
+          },
+          {
+            "type": "prompt",
+            "prompt": "Check if this file write/edit violates microservices architecture boundaries. Rules: (1) Files in src/agents/ must NOT import from other agent files (agents communicate via orchestrator handoffs only). (2) Files in src/services/ must NOT import from src/agents/. (3) Dependency direction: api → agents → services → db → shared. (4) New Python files must be in the correct directory per the architecture. Input: $ARGUMENTS. Respond {\"ok\": true} if compliant, or {\"ok\": false, \"reason\": \"Architecture violation: [details]\"} if not.",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/lint-and-format.sh",
+            "statusMessage": "Running lint + format + type check..."
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "Before Claude stops, verify: (1) DRY: no duplicated logic across files that should be in src/shared/. (2) Docs: all new public functions have docstrings; new directories have README.md. Use Grep, Glob, and Read to verify. If violations: {\"ok\": false, \"reason\": \"[violations]\"}. TDD is enforced by Superpowers — do NOT check TDD here. Context: $ARGUMENTS",
+            "timeout": 120,
+            "statusMessage": "Verifying DRY + docs compliance..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/handoff-to-codex.sh",
+            "statusMessage": "Checking for Codex handoff..."
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/enforce-tdd.sh",
+            "statusMessage": "Running test suite (TDD gate)..."
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true
+  }
+}
