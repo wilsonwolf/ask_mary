@@ -49,9 +49,8 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <service name="ElevenLabs" use="Voice agent — real-time conversational AI + Twilio phone integration"/>
     <service name="Databricks" use="Analytics DB (Delta Lake), EHR data, trial metadata, MLflow observability, transcript analysis"/>
     <service name="Google Cloud" use="Cloud Run (compute), Cloud SQL Postgres (operational DB), Cloud Tasks (job queue), Artifact Registry, Secret Manager"/>
-    <service name="Lovable" use="Frontend dashboard generation (React/TypeScript)"/>
+    <service name="Claude Code" use="Primary dev tool — implementation, planning, iteration, demo dashboard (React/TS + FastAPI WebSocket)"/>
     <service name="Cursor" use="IDE for rapid development"/>
-    <service name="Claude Code" use="Agent coding — implementation, planning, iteration"/>
     <service name="OpenAI" use="Agent SDK, backup LLM, Codex for code review"/>
   </available_credits>
 
@@ -96,9 +95,17 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
 
     <step id="S2" name="identity_verification">
       <description>
-        Verify identity via DOB + ZIP (or equivalent) before any PHI or trial
-        specifics are shared. Detect duplicates by phone + DOB. If wrong person:
-        do not disclose anything, mark wrong_person, suppress further outreach.
+        Verify identity via DOB year + ZIP before any PHI or trial specifics
+        are shared. DTMF capture flow (voice calls):
+          1. ElevenLabs agent prompts: "enter your birth year as four digits"
+          2. Twilio captures DTMF digits and forwards via webhook payload
+          3. ElevenLabs passes digits to our FastAPI server tool
+          4. Identity agent validates DOB year + ZIP against participant record
+        For SMS/WhatsApp: participant types digits as text (parsed by agent).
+        Voice collects DOB year (4 digits via DTMF) + ZIP for quick verification.
+        Duplicate detection uses full DOB + ZIP + phone from the DB record
+        (not just the year). If wrong person: do not disclose anything,
+        mark wrong_person, suppress further outreach.
       </description>
       <agents>identity_agent</agents>
       <data_sources>participants table (Postgres)</data_sources>
@@ -107,6 +114,13 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
           No trial details, no disease details until identity verified.
         </gate>
       </gates>
+      <dtmf_flow>
+        <step>Twilio captures DTMF keypad presses during voice call</step>
+        <step>ElevenLabs receives digits via native Twilio integration</step>
+        <step>ElevenLabs calls our verify_identity server tool with captured digits</step>
+        <step>FastAPI endpoint validates against participant record in Postgres</step>
+        <step>Result (verified|wrong_person) returned to ElevenLabs for voice response</step>
+      </dtmf_flow>
     </step>
 
     <step id="S3" name="screening_and_education">
@@ -133,8 +147,10 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         language mismatch.
         Output: HANDOFF_NOW | CALLBACK_TICKET | STOP_CONTACT.
         On trigger: write to handoff_queue (Postgres) with all coordinator fields.
-        Latency budget: must complete in under 200ms. If too slow, move to
-        parallel check with interrupt (post-MVP).
+        Latency: instrumented with Langfuse tracing — every invocation logs
+        elapsed_ms, trigger type, and severity. No hard latency cap for MVP;
+        measure first, optimize later. Hard ceiling at 1000ms (user-perceptible).
+        See Section 7.5 for latency harness details.
       </description>
       <agents>safety_gate (inline check on every agent response)</agents>
       <data_sources>handoff_queue (Postgres)</data_sources>
@@ -276,8 +292,8 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <agent name="supervisor_agent" role="Post-call transcript audit, compliance check, deception detection">
       <sdk>OpenAI Agents SDK</sdk>
     </agent>
-    <agent name="safety_gate" role="Inline blocking pre-check on every agent response for handoff triggers">
-      <sdk>Inline function (not a full agent — runs in &lt;200ms)</sdk>
+    <agent name="safety_gate" role="Blocking pre-check on every agent response for handoff triggers">
+      <sdk>Inline function (latency-instrumented, logged to Langfuse — no hard cap for MVP, hard ceiling 1000ms)</sdk>
     </agent>
   </agents>
 
@@ -285,13 +301,13 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <backend language="python" framework="FastAPI" agent_sdk="OpenAI Agents SDK"/>
     <voice platform="ElevenLabs Conversational AI 2.0" telephony="Twilio"/>
     <database_operational platform="Cloud SQL (Postgres)" connector="asyncpg + SQLAlchemy"
-      purpose="Transactional state: participants, appointments, rides, conversations, events, handoff_queue"/>
+      purpose="Transactional state: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides"/>
     <database_analytics platform="Databricks" format="Delta Lake" connector="databricks-sql-connector"
       purpose="Analytics: trials (ref), participant_ehr, conversation_transcripts, audit_log, ML models"/>
-    <event_bridge from="Postgres" to="Databricks" method="Pub/Sub CDC"/>
+    <event_bridge from="Postgres" to="Databricks" method="App-level Pub/Sub publisher (not native CDC — app publishes after each commit)"/>
     <audio_storage platform="Google Cloud Storage" bucket="ask-mary-audio" access="IAM + signed URLs"/>
     <comms_templates location="repo: comms_templates/*.yaml" format="YAML with Jinja2 variables"/>
-    <frontend generator="Lovable" framework="React/TypeScript" host="Firebase Hosting"/>
+    <frontend generator="Claude Code" framework="React/TypeScript" host="Firebase Hosting" notes="Demo dashboard built by Claude Code with FastAPI WebSocket for real-time updates"/>
     <observability primary="Langfuse" secondary="Databricks MLflow"/>
     <deployment platform="Google Cloud Run" containerization="Docker" registry="Artifact Registry"/>
     <job_queue platform="Cloud Tasks" purpose="Timed reminders, slot expiry, re-check scheduling">
@@ -304,7 +320,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
   </tech_stack>
 
   <safety>
-    <requirement id="SAFE1">Blocking pre-check on every agent response for handoff triggers (&lt;200ms)</requirement>
+    <requirement id="SAFE1">Blocking pre-check on every agent response for handoff triggers (latency-instrumented, hard ceiling 1000ms)</requirement>
     <requirement id="SAFE2">Disclosure + consent-to-engage gate MUST pass before conversation proceeds</requirement>
     <requirement id="SAFE3">Identity verification (DOB+ZIP) MUST pass before any PHI/trial details shared</requirement>
     <requirement id="SAFE4">DNC flags enforced before any outbound; if channel blocked, switch or stop</requirement>
@@ -355,7 +371,7 @@ Clinical trial recruitment suffers from high participant dropout, scheduling fri
 | P0 | Append-only events log with provenance + idempotency keys | Must have |
 | P0 | Handoff queue with severity routing + SLA tracking (S8) | Must have |
 | P1 | Uber Health ride booking (mocked) with transport exception handling (S6) | Should have |
-| P1 | Admin dashboard — pipeline view, handoff tickets, conversation logs (Lovable) | Should have |
+| P1 | Demo dashboard — real-time panels, events feed, WebSocket updates (Claude Code + React) | Should have |
 | P1 | Post-call supervisor agent audit + deception detection | Should have |
 | P1 | Teach-back confirmation before booking finalized | Should have |
 | P2 | Adversarial re-screening — 2-week follow-up via Cloud Tasks (S4) | Nice to have |
@@ -365,7 +381,7 @@ Clinical trial recruitment suffers from high participant dropout, scheduling fri
 
 ### 2.5 Non-Functional Requirements
 
-- **Latency**: Voice response < 1 second; safety gate < 200ms (critical for natural conversation)
+- **Latency**: Voice response < 1 second; safety gate latency-instrumented (hard ceiling 1000ms, no hard cap for MVP — measure first via Langfuse tracing)
 - **Availability**: Cloud-hosted, accessible via phone number for demo
 - **Security**: No PHI shared before identity verification passes; DNC enforced before any outbound
 - **Auditability**: Full conversation transcripts + append-only events log with provenance; audio recordings stored in GCS
@@ -403,7 +419,7 @@ graph TB
     end
 
     subgraph "Safety Layer"
-        SAFETY_GATE["Safety Gate<br/>(inline pre-check<br/>&lt;200ms)"]
+        SAFETY_GATE["Safety Gate<br/>(blocking pre-check<br/>latency-instrumented)"]
         SUPER["Supervisor<br/>Agent"]
         ADVERS["Adversarial<br/>Checker"]
     end
@@ -415,8 +431,10 @@ graph TB
 
     subgraph "Operational DB (Cloud SQL Postgres)"
         PG_PARTS["participants"]
+        PG_PT["participant_trials"]
         PG_APPTS["appointments"]
         PG_CONVOS["conversations<br/>(+ full transcripts)"]
+        PG_REASON["agent_reasoning"]
         PG_EVENTS["events<br/>(append-only log)"]
         PG_HANDOFF["handoff_queue"]
         PG_RIDES["rides"]
@@ -439,7 +457,7 @@ graph TB
     end
 
     subgraph "Event Bridge"
-        PS["Pub/Sub<br/>(Postgres → Databricks<br/>CDC stream)"]
+        PS["Pub/Sub<br/>(App-level publisher<br/>Postgres → Databricks)"]
     end
 
     subgraph "Observability"
@@ -448,7 +466,7 @@ graph TB
     end
 
     subgraph "Frontend"
-        DASH["Admin Dashboard<br/>(Lovable → React)"]
+        DASH["Demo Dashboard<br/>(React + WebSocket)"]
     end
 
     PHONE --> TW_VOICE --> EL
@@ -538,19 +556,25 @@ sequenceDiagram
     end
 
     Note over O,SG: S3.5 — Safety gate runs on EVERY agent response
-    O->>SG: Pre-check (blocking, <200ms)
+    O->>SG: Pre-check (blocking, latency-instrumented)
     alt Handoff trigger detected
         SG->>PG: Write to handoff_queue
         SG->>PG: Log event (handoff_created)
         Note over SG: Transfer to coordinator
     end
 
-    Note over ID,PG: S2 — Identity Verification
+    Note over ID,PG: S2 — Identity Verification (DTMF for voice)
     O->>ID: Handoff → verify identity
     ID->>PG: Fetch participant (sub-ms)
-    ID->>P: "Confirm DOB and ZIP?"
-    P->>ID: Provides DOB + ZIP
-    ID->>PG: Validate (detect duplicate/wrong person)
+    ID->>P: "Enter your birth year as four digits"
+    P->>TW: DTMF digits (e.g. 1980)
+    TW->>EL: Digits forwarded via native integration
+    EL->>ID: verify_identity server tool call (year=1980)
+    ID->>P: "Now enter your ZIP code"
+    P->>TW: DTMF digits (e.g. 94107)
+    TW->>EL: Digits forwarded
+    EL->>ID: verify_identity server tool call (zip=94107)
+    ID->>PG: Validate DOB year + ZIP (detect duplicate/wrong person)
     alt Wrong person
         ID->>PG: Mark wrong_person, suppress outreach
     else Verified
@@ -690,7 +714,7 @@ graph LR
             PROD_API["Cloud Run<br/>API (prod)"]
             PROD_WORKER["Cloud Run<br/>Worker (prod)"]
         end
-        FB["Firebase Hosting<br/>(Dashboard)"]
+        FB["Firebase Hosting<br/>(Demo Dashboard)"]
         DB_CLOUD["Databricks<br/>(Cloud)"]
     end
 
@@ -804,7 +828,7 @@ ElevenLabs handles the **voice layer**:
 graph LR
     subgraph "Cloud SQL Postgres (OLTP)"
         direction TB
-        PG["Operational State<br/>• participants<br/>• participant_trials<br/>• appointments<br/>• conversations<br/>• agent_reasoning<br/>• events (append-only)<br/>• handoff_queue<br/>• rides"]
+        PG["Operational State<br/>• participants<br/>• participant_trials<br/>• appointments<br/>• conversations<br/>• agent_reasoning<br/>• events (append&#8209;only)<br/>• handoff_queue<br/>• rides"]
     end
 
     subgraph "Pub/Sub Event Bridge"
@@ -823,7 +847,7 @@ graph LR
     PG -->|"event stream"| PS
     PS -->|"ingest"| DB
     DB -->|"read reference<br/>data (trials, EHR)"| PG
-    PG -->|"audio_url refs"| GCS
+    PG -->|"audio_gcs_path refs"| GCS
 ```
 
 **Why this split:**
@@ -859,7 +883,7 @@ erDiagram
 
     PARTICIPANTS {
         uuid participant_id PK
-        string mary_id UK "internal ID: hash(first_name, last_name, dob, phone)"
+        string mary_id UK "internal ID: HMAC-SHA256(canonicalize(first_name, last_name, dob, phone), pepper)"
         string agency_id
         string first_name
         string last_name
@@ -876,7 +900,6 @@ erDiagram
         string best_time_to_reach
         string language
         string identity_status "unverified|verified|wrong_person"
-        string pipeline_status "new|outreach|screening|scheduling|booked|confirmed|completed|no_show|cancelled|unreachable|dnc"
         jsonb dnc_flags "DNC_ALL, DNC_SMS, DNC_VOICE, DNC_WHATSAPP per channel + twilio_opt_out_synced"
         jsonb contactability "ok_to_leave_voicemail, permitted_voicemail_name, etc."
         jsonb consent "disclosed_automation, consent_to_continue, consent_sms, consent_future_trials"
@@ -922,7 +945,7 @@ erDiagram
         string direction "inbound|outbound"
         string agent_name
         string call_sid UK
-        string audio_url "GCS signed URL for voice recordings"
+        string audio_gcs_path "GCS object path (signed URLs generated on demand)"
         float duration_seconds
         string status "active|completed|failed|transferred"
         jsonb full_transcript "ordered array of turns with speaker, text, timestamp"
@@ -998,6 +1021,7 @@ erDiagram
         uuid participant_trial_id PK
         uuid participant_id FK
         string trial_id FK
+        string pipeline_status "new|outreach|screening|scheduling|booked|confirmed|completed|no_show|cancelled|unreachable|dnc"
         string enrollment_status "screening|eligible|enrolled|completed|withdrawn|ineligible"
         string eligibility_status "pending|eligible|provisional|ineligible|needs_human"
         float eligibility_confidence
@@ -1013,7 +1037,12 @@ erDiagram
 
 **Key Postgres features used:**
 - `uuid` primary keys (no sequential leaks)
-- `mary_id` = deterministic internal identifier: `hash(first_name, last_name, dob, phone)` — enables dedup while allowing shared phone numbers (caregivers/family)
+- `mary_id` = deterministic internal identifier with canonicalization + pepper:
+  - **Canonicalization**: `lowercase(strip(first_name)) + lowercase(strip(last_name)) + dob_iso + digits_only(phone)`
+  - **Hash**: `HMAC-SHA256(canonical_string, MARY_ID_PEPPER)` — pepper stored in Secret Manager, not in code
+  - **Why HMAC**: plain SHA-256 of name+dob+phone is trivially reversible via rainbow tables; HMAC with a secret pepper prevents this
+  - **Collision avoidance**: SHA-256 has negligible collision probability; canonicalization prevents "John Smith" vs "john smith" creating different IDs
+  - Enables dedup while allowing shared phone numbers (caregivers/family)
 - `participant_trials` junction table enables multi-trial enrollment — a participant can be screening for Trial A while enrolled in Trial B
 - `phone` is NOT unique — multiple participants (e.g. family members, caregiver-managed) can share a phone number; identity is resolved via `mary_id`
 - `UK` = UNIQUE constraints (mary_id, double-booking via appointment slots, duplicate events via idempotency_key)
@@ -1023,7 +1052,7 @@ erDiagram
 - `confirmation_due_at` on appointments drives the 12-hour confirmation window (Cloud Tasks checks at T+11h and T+12h)
 - `events` table is **append-only** — no UPDATE/DELETE, indexed on `(participant_id, event_type, created_at)` for fast lookups
 - `handoff_queue` tracks SLA with `due_at` and status progression
-- `pipeline_status` on participants tracks current workflow state across the full lifecycle
+- `pipeline_status` lives on `participant_trials` (not participants) — each trial enrollment has its own pipeline state, avoiding ambiguity when a participant is in multiple trials
 - `provenance` field on events distinguishes data source (patient_stated vs ehr vs coordinator vs system)
 - `idempotency_key` on events prevents duplicate outbound actions (SMS, voice, transport bookings)
 - `agent_reasoning` stored in separate `AGENT_REASONING` table — never commingled with conversation data (PHI/audit isolation)
@@ -1149,7 +1178,7 @@ gs://ask-mary-audio/
 - IAM-based access (no public URLs)
 - Signed URLs with expiration for dashboard playback
 - Retention policy: per-trial default = trial duration + regulatory hold period
-- `conversations.audio_url` in Postgres stores the GCS path (not a signed URL — URLs are generated on demand)
+- `conversations.audio_gcs_path` in Postgres stores only the GCS object path (e.g. `trial_id/participant_id/conversation_id.wav`) — signed URLs are generated on demand with expiration for dashboard playback
 
 ### 6.4 Comms Templates (Repo Config)
 
@@ -1179,7 +1208,7 @@ Each template uses Jinja2 variables (`{{ participant.first_name }}`, `{{ appoint
 ```mermaid
 graph TD
     subgraph "Real-time Safety (Every Agent Response)"
-        A["Agent generates response"] --> SG{"Safety Gate<br/>(blocking pre-check<br/>&lt;200ms)"}
+        A["Agent generates response"] --> SG{"Safety Gate<br/>(blocking pre-check<br/>latency-instrumented)"}
         SG -->|"medical advice,<br/>symptoms, AE,<br/>consent confusion,<br/>anger/threats,<br/>language mismatch"| HQ["Write to<br/>handoff_queue"]
         HQ --> HQ_NOW{"Severity?"}
         HQ_NOW -->|HANDOFF_NOW| XFER["Immediate warm transfer<br/>via Twilio call forwarding<br/>to coordinator_phone<br/>+ dashboard alert"]
@@ -1223,7 +1252,7 @@ tests/
     test_disclosure_before_proceed.py    # Disclosure gate enforced before conversation (G1)
     test_dnc_enforcement.py              # DNC flags block outbound on correct channels (internal + Twilio opt-out sync)
     test_dnc_stop_keyword.py             # Inbound "STOP" sets DNC flag in DB + logs event + Twilio sync
-    test_identity_verification.py        # DOB + ZIP flow, duplicate detection, wrong_person handling
+    test_identity_verification.py        # DOB year + ZIP flow (voice DTMF), full DOB + ZIP + phone dedup, wrong_person handling
     test_eligibility_boundaries.py       # Edge cases in inclusion/exclusion criteria
     test_deception_detection.py          # Known deception patterns caught by adversarial checker
     test_handoff_triggers.py             # All 7 handoff trigger types fire correctly
@@ -1268,7 +1297,7 @@ tests/
 | **Metrics** | Databricks MLflow | Track screening accuracy, no-show rates, call duration |
 | **Logs** | Structured JSON → Databricks | All events, searchable via SQL |
 | **Alerts** | Langfuse + webhook → Slack | High-risk audit findings, pipeline failures |
-| **Dashboard** | Lovable-generated React UI | Real-time participant pipeline view |
+| **Dashboard** | React + FastAPI WebSocket (built by Claude Code) | Real-time demo dashboard with live event updates |
 
 ### 7.4 Agent Evaluation Framework
 
@@ -1289,7 +1318,7 @@ Each scenario defines:
 
 ### 7.5 Safety Gate Latency Harness
 
-The <200ms safety gate target is aspirational — actual latency depends on implementation complexity. Rather than hard-fail, we **measure, log, and make observable**:
+The safety gate has **no hard latency cap for MVP**. The goal is to measure actual latency under real conditions, then optimize based on data. Hard ceiling at 1000ms (user-perceptible delay in voice conversation).
 
 **Instrumentation (built into safety_gate):**
 ```python
@@ -1308,7 +1337,6 @@ async def safety_gate(response: str, context: dict) -> SafetyResult:
             "elapsed_ms": elapsed_ms,
             "triggered": result.triggered,
             "severity": result.severity,
-            "over_budget": elapsed_ms > 200,
         }
     )
     logger.info("safety_gate", elapsed_ms=elapsed_ms, triggered=result.triggered)
@@ -1318,13 +1346,18 @@ async def safety_gate(response: str, context: dict) -> SafetyResult:
 **Test harness (`test_handoff_latency.py`):**
 - Runs safety gate against all 7 trigger types + 10 benign inputs
 - Logs p50, p95, p99 latency for each
-- **Warns** (not fails) if p95 > 200ms — allows us to measure before enforcing
+- **Logs** all latency data for analysis — no warnings on specific thresholds for MVP
 - **Fails** if p95 > 1000ms (hard ceiling — user-perceptible delay)
 
 **Dashboard visibility:**
 - Langfuse trace view: filter by `safety_gate` events, sort by `elapsed_ms`
 - Structured logs: `jq '.elapsed_ms'` for quick CLI inspection
 - Alert: Langfuse webhook if p95 > 500ms over any 5-minute window
+
+**Post-MVP optimization path:** Once we have real latency data, decide whether to:
+- Keep blocking if latency is acceptable
+- Split into fast rule-based inline check + async LLM check with interrupt
+- Add caching for common trigger patterns
 
 ---
 
@@ -1367,7 +1400,7 @@ on PR to main:
 |---------|------|------|-------------|-------|
 | `ask-mary-api` | Web (Cloud Run) | 8000 | `us-central1` | FastAPI — handles webhooks, REST endpoints. Min instances: 1 (avoid cold start for Twilio webhooks). |
 | `ask-mary-worker` | Worker (Cloud Run) | — | `us-central1` | Background tasks: reminders, Uber booking, audits. Triggered by Cloud Tasks or Pub/Sub. Min instances: 0. **Dedup guard**: every handler checks `task_idempotency_key` against events table before executing — prevents duplicate calls/texts from retries. |
-| `ask-mary-dashboard` | Static (Firebase Hosting) | 443 | Global CDN | React app from Lovable. Alternatively, serve as Cloud Run service. |
+| `ask-mary-dashboard` | Static (Firebase Hosting) | 443 | Global CDN | React demo dashboard (built by Claude Code). WebSocket connects to ask-mary-api for real-time updates. |
 
 **GCP Services Used**:
 | Service | Purpose |
@@ -1378,7 +1411,7 @@ on PR to main:
 | Secret Manager | API keys, tokens (HIPAA-safe) |
 | Cloud Build | CI/CD Docker builds |
 | Cloud Tasks | Scheduled reminders, retries, timed slot releases |
-| Pub/Sub | Event bridge: Postgres → Databricks CDC stream |
+| Pub/Sub | Event bridge: app-level publisher, Postgres → Databricks |
 | Firebase Hosting | Static frontend (dashboard) |
 | Cloud Logging | Centralized logs |
 | IAM | Service accounts, least-privilege access |
@@ -1415,7 +1448,7 @@ on PR to main:
 | 2.1 Outreach Agent | Claude Code | 30 min | DNC enforcement, retry cadence logic (3 voice + SMS), consent capture, events logging |
 | 2.2 Identity Agent | Claude Code | 30 min | DOB+ZIP verification, duplicate/wrong-person detection, identity_status update |
 | 2.3 Screening Agent | Claude Code | 60 min | Trial criteria matching, hard excludes first, EHR cross-reference, provenance annotation, caregiver auth, eligibility_status output |
-| 2.4 Safety Gate | Claude Code | 30 min | Inline blocking pre-check (<200ms), 7 trigger types, handoff_queue writes, severity routing |
+| 2.4 Safety Gate | Claude Code | 30 min | Blocking pre-check with Langfuse latency instrumentation, 7 trigger types, handoff_queue writes, severity routing, hard ceiling 1000ms |
 | 2.5 Scheduling Agent | Claude Code | 60 min | Geo/distance gate, Google Calendar MCP, slot reservation (SELECT FOR UPDATE), 12h confirmation window, teach-back, Cloud Tasks scheduling |
 | 2.6 Transport Agent | Claude Code | 30 min | Uber Health mock + interface, pickup address verification, T-24h/T-2h reconfirmation scheduling |
 | 2.7 Comms Agent | Claude Code | 45 min | Event-driven cadence (T-48h prep, T-24h confirm, T-2h check-in, T+0 rescue), idempotency keys, unreachable workflow, channel switching |
@@ -1438,7 +1471,7 @@ on PR to main:
 |------|-------|----------|---------|
 | 4.1 Demo dashboard (React + WebSocket) | Claude Code | 90 min | Real-time demo dashboard per `local_docs/demo_script.md`: 4 panels (Call & Safety Gates, Eligibility, Scheduling, Transport) + scrolling events feed. WebSocket push from FastAPI for live updates during calls. "Start Demo Call" button triggers outbound Twilio call. |
 | 4.2 Dashboard API endpoints | Claude Code | 30 min | REST + WebSocket endpoints: participants list/detail, appointments, handoff_queue, conversations, events, analytics summary. WebSocket broadcasts events as they happen for real-time dashboard. |
-| 4.3 Pub/Sub event bridge | Claude Code | 20 min | CDC from Postgres events/conversations/appointments → Databricks via Pub/Sub |
+| 4.3 Pub/Sub event bridge | Claude Code | 20 min | App-level publisher: after Postgres commits, publish to Pub/Sub topic → Databricks ingestion. Periodic sweep for stragglers. |
 | 4.4 Deploy to GCP Cloud Run | Claude Code | 30 min | Docker build, push to Artifact Registry, deploy Cloud Run services, set env vars via Secret Manager |
 | 4.5 End-to-end test call | Human | 30 min | Call the Twilio number, run through full flow: outreach → screening → booking → confirmation |
 
@@ -1514,7 +1547,7 @@ gantt
 |------|-----------|--------|------------|
 | Uber Health API requires enterprise account | High | Medium | Mock API with well-defined interface; swap later |
 | ElevenLabs voice latency spikes | Medium | High | Pre-test during setup phase; have SMS fallback |
-| Safety gate exceeds 200ms latency budget | Medium | High | Keep safety gate as simple keyword/pattern check (not full LLM call); benchmark in Phase 2; fall back to parallel check with interrupt if needed |
+| Safety gate latency impacts conversation flow | Medium | Medium | Every invocation instrumented via Langfuse (elapsed_ms, trigger type). No hard cap for MVP — measure actual p50/p95/p99 first. Hard ceiling at 1000ms. If consistently slow, move to parallel check with interrupt. |
 | Databricks SQL warehouse cold start (analytics queries) | Medium | Low | Only used for reference data + batch analytics, not in hot path. Keep warehouse warm for demo. |
 | Twilio number not provisioned in time | Low | Critical | Buy number immediately in Phase 1 |
 | Participant data privacy in demo | Medium | High | Use synthetic data only; never use real PHI |
