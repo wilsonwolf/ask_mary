@@ -1,0 +1,8 @@
+name: prep_instructions
+channel: sms
+description: T-48h preparation instructions before appointment.
+body: >
+  Hi {{ participant_name }}, your {{ trial_name }} appointment at
+  {{ site_name }} is on {{ appointment_date }} at {{ appointment_time }}.
+  Please remember: {{ prep_instructions }}.
+  Reply HELP for questions or call {{ coordinator_phone }}.

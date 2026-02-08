@@ -1,7 +1,7 @@
 """Append-only event logging with idempotency key enforcement."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,7 +61,7 @@ async def log_event(
         provenance=provenance,
         idempotency_key=idempotency_key,
         channel=channel,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     session.add(event)
     await session.flush()

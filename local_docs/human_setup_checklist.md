@@ -163,17 +163,18 @@
 - [ ] Note **DATABRICKS_HTTP_PATH**: `___________________________`
 - [ ] Note **DATABRICKS_TOKEN**: `___________________________`
 
-### 9. Create Google Calendar Service Account (~10 min)
+### 9. ~~Create Google Calendar Service Account~~ — DEFERRED (Post-Hackathon)
 
-> Needed by: Phase 2 (scheduling agent)
+> **Deferred**: MVP uses Postgres-based slot management. Google Calendar integration is post-hackathon.
+> See Section 14.1 of `ask_mary_plan.md` for the full implementation plan.
 
-- [ ] Go to GCP Console → APIs & Services → Credentials
-- [ ] Create service account (name: `ask-mary-calendar`)
-- [ ] Download JSON key file
-- [ ] Enable Google Calendar API
-- [ ] Share the target calendar with the service account email
-- [ ] Note **GOOGLE_CALENDAR_CREDENTIALS** (JSON key file path): `___________________________`
-- [ ] Note **GOOGLE_CALENDAR_ID**: `___________________________`
+- [ ] ~~Go to GCP Console → APIs & Services → Credentials~~
+- [ ] ~~Create service account (name: `ask-mary-calendar`)~~
+- [ ] ~~Download JSON key file~~
+- [ ] ~~Enable Google Calendar API~~
+- [ ] ~~Share the target calendar with the service account email~~
+- [ ] ~~Note **GOOGLE_CALENDAR_CREDENTIALS** (JSON key file path)~~
+- [ ] ~~Note **GOOGLE_CALENDAR_ID**~~
 
 ### 10. Create GitHub Fine-Grained PAT (~5 min)
 

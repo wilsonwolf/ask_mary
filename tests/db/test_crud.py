@@ -1,15 +1,13 @@
 """Integration tests for database CRUD operations against Cloud SQL."""
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config.settings import get_settings
 from src.db.events import log_event
-from src.db.models import Base
 from src.db.postgres import (
     create_appointment,
     create_conversation,
@@ -75,9 +73,7 @@ class TestCreateParticipant:
             phone="5551234567",
             pepper=PEPPER,
         )
-        expected_mary_id = generate_mary_id(
-            "John", "Doe", date(1980, 6, 15), "5551234567", PEPPER
-        )
+        expected_mary_id = generate_mary_id("John", "Doe", date(1980, 6, 15), "5551234567", PEPPER)
         assert p.mary_id == expected_mary_id
         assert p.identity_status == "unverified"
 
@@ -118,9 +114,7 @@ class TestCreateParticipant:
 class TestEnrollInTrial:
     """Trial enrollment creates participant_trials record."""
 
-    async def test_enroll(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_enroll(self, db_session: AsyncSession, sample_participant) -> None:
         """Participant can be enrolled in a trial."""
         pt = await enroll_in_trial(
             db_session,
@@ -136,9 +130,7 @@ class TestEnrollInTrial:
 class TestEventLogging:
     """Append-only event logging with idempotency."""
 
-    async def test_log_event(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_log_event(self, db_session: AsyncSession, sample_participant) -> None:
         """Event is created with correct fields."""
         event = await log_event(
             db_session,
@@ -194,16 +186,14 @@ class TestEventLogging:
 class TestAppointment:
     """Appointment creation."""
 
-    async def test_create(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_create(self, db_session: AsyncSession, sample_participant) -> None:
         """Appointment is created with booked status."""
         appt = await create_appointment(
             db_session,
             participant_id=sample_participant.participant_id,
             trial_id="TRIAL-001",
             visit_type="screening",
-            scheduled_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
+            scheduled_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
             site_name="Valley Research Clinic",
         )
         assert appt.status == "booked"
@@ -213,9 +203,7 @@ class TestAppointment:
 class TestHandoff:
     """Handoff queue creation."""
 
-    async def test_create(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_create(self, db_session: AsyncSession, sample_participant) -> None:
         """Handoff ticket is created with open status."""
         handoff = await create_handoff(
             db_session,
@@ -231,16 +219,14 @@ class TestHandoff:
 class TestRide:
     """Transport ride creation."""
 
-    async def test_create(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_create(self, db_session: AsyncSession, sample_participant) -> None:
         """Ride is created with pending status."""
         appt = await create_appointment(
             db_session,
             participant_id=sample_participant.participant_id,
             trial_id="TRIAL-001",
             visit_type="screening",
-            scheduled_at=datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc),
+            scheduled_at=datetime(2026, 3, 1, 10, 0, tzinfo=UTC),
         )
         ride = await create_ride(
             db_session,
@@ -248,7 +234,7 @@ class TestRide:
             participant_id=sample_participant.participant_id,
             pickup_address="123 Main St, San Francisco, CA 94107",
             dropoff_address="456 Research Way, Palo Alto, CA 94304",
-            scheduled_pickup_at=datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc),
+            scheduled_pickup_at=datetime(2026, 3, 1, 9, 0, tzinfo=UTC),
         )
         assert ride.status == "pending"
         assert ride.pickup_address == "123 Main St, San Francisco, CA 94107"
@@ -257,9 +243,7 @@ class TestRide:
 class TestConversation:
     """Conversation record creation."""
 
-    async def test_create(
-        self, db_session: AsyncSession, sample_participant
-    ) -> None:
+    async def test_create(self, db_session: AsyncSession, sample_participant) -> None:
         """Conversation is created with active status."""
         convo = await create_conversation(
             db_session,

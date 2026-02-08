@@ -1,7 +1,7 @@
 # Ask Mary — Implementation Tracker
 
 > Auto-updated at the end of each phase by the tracker enforcement hook.
-> Last updated: 2026-02-07 Phase 1 complete.
+> Last updated: 2026-02-08 Phase 2 complete.
 
 ---
 
@@ -10,7 +10,7 @@
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
 | 1.1 Project scaffolding | DONE | pyproject.toml, src/*/__init__.py, directory structure | — | uv project, 85 deps, Python 3.12 |
-| 1.2 Cloud SQL Postgres setup | DONE | alembic/, alembic/versions/ (2 migrations) | — | 8 tables + FKs applied to ask_mary_dev |
+| 1.2 Cloud SQL Postgres setup | DONE | alembic/, alembic/versions/ (3 migrations) | — | 9 tables (8 original + trials) + FKs applied to ask_mary_dev |
 | 1.3 Operational DB module | DONE | src/db/models.py, src/db/postgres.py, src/db/events.py, src/db/session.py | tests/db/test_models.py (15), tests/db/test_crud.py (12) | CRUD with idempotency dedup, FK constraints |
 | 1.4 Databricks analytics tables | NOT STARTED | — | — | Blocked: no Databricks credentials yet |
 | 1.5 Analytics DB module | NOT STARTED | — | — | Blocked: depends on 1.4 |
@@ -29,21 +29,28 @@
 
 **Phase 1 test count: 55 tests passing**
 
+**Additional Phase 1 deliverables (added during Phase 2):**
+| Item | Status | Files | Tests |
+|------|--------|-------|-------|
+| Trials table + CRUD | DONE | src/db/models.py (Trial model), src/db/trials.py, alembic/versions/a1b2c3d4e5f6 | tests/db/test_trials.py (8) |
+| Shared validators | DONE | src/shared/validators.py | tests/shared/test_validators.py (11) |
+
 ---
 
 ## Phase 2: Core Agents (Hours 3-7)
 
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
-| 2.1 Outreach Agent | NOT STARTED | src/agents/outreach.py (stub exists) | — | DNC enforcement, retry cadence, consent capture, **pre-call context assembly** (load participant + trial criteria → build dynamic_variables + config_override → initiate ElevenLabs outbound call) |
-| 2.2 Identity Agent | NOT STARTED | src/agents/identity.py (stub exists) | — | DOB year + ZIP via DTMF, duplicate detection |
-| 2.3 Screening Agent | NOT STARTED | src/agents/screening.py (stub exists) | — | Trial criteria, EHR cross-ref, provenance |
-| 2.4 Safety Gate (full impl) | PARTIAL | src/shared/safety_gate.py | tests/shared/test_safety_gate.py (9) | Pattern matching done; Langfuse integration TODO |
-| 2.5 Scheduling Agent | NOT STARTED | src/agents/scheduling.py (stub exists) | — | Geo gate, Google Calendar, slot booking, teach-back |
-| 2.6 Transport Agent | NOT STARTED | src/agents/transport.py (stub exists) | — | Mock Uber Health, pickup verification |
-| 2.7 Comms Agent | NOT STARTED | src/agents/comms.py (stub exists) | — | Event-driven cadence, Jinja2 templates |
-| 2.8 ElevenLabs voice integration | NOT STARTED | src/services/elevenlabs_client.py | — | Server-side tools, DTMF capture, **outbound call helper** (accepts participant + trial data, builds dynamic_variables + conversation_config_override, calls ElevenLabs API), agent prompt template with {{variable}} placeholders |
-| 2.9 Comms templates (YAML) | NOT STARTED | comms_templates/ (dir exists) | — | 9 YAML templates with Jinja2 |
+| 2.1 Outreach Agent | DONE | src/agents/outreach.py | tests/agents/test_outreach.py (11) | 6 helpers + 6 SDK tools. Dual-source DNC (internal + Twilio). ElevenLabs outbound wired. Pre-call context includes trial criteria + visit templates. |
+| 2.2 Identity Agent | DONE | src/agents/identity.py | tests/agents/test_identity.py (10) | 3 helpers + 3 SDK tools. Attempt tracking via contactability JSONB. Handoff after 2 failed attempts. |
+| 2.3 Screening Agent | DONE | src/agents/screening.py | tests/agents/test_screening.py (10) | 5 helpers + 5 SDK tools. Hard exclude check, provenance tracking, caregiver recording. |
+| 2.4 Safety Gate (full impl) | DONE | src/shared/safety_gate.py | tests/shared/test_safety_gate.py (16) | All 7 triggers. on_trigger callback for handoff_queue writes. Langfuse tracing deferred (optional). |
+| 2.5 Scheduling Agent | DONE | src/agents/scheduling.py | tests/agents/test_scheduling.py (12) | 6 helpers + 6 SDK tools. SELECT FOR UPDATE slot hold. confirmation_due_at = booked_at + 12h. Teach-back verification. |
+| 2.6 Transport Agent | DONE | src/agents/transport.py, src/services/uber_client.py | tests/agents/test_transport.py (5), tests/services/test_uber_client.py (3) | 3 helpers + 3 SDK tools. Mock Uber Health client. |
+| 2.7 Comms Agent | DONE | src/agents/comms.py, src/shared/comms.py | tests/agents/test_comms.py (4), tests/shared/test_comms.py (3) | 3 helpers + 3 SDK tools. Idempotency keys. Channel switching fallback. |
+| 2.8 ElevenLabs voice integration | DONE | src/services/elevenlabs_client.py | tests/services/test_elevenlabs_client.py (5) | ElevenLabsClient with agent_phone_number_id. Pure function helpers. Wired to outreach agent. |
+| 2.9 Comms templates (YAML) | DONE | comms_templates/ (12 YAML files) | tests/test_comms_templates.py (4) | 9 original + 3 added (consent_sms, ineligible_close, unreachable). |
+| 2.10 Twilio client | DONE | src/services/twilio_client.py | tests/services/test_twilio_client.py (3) | DNC check via Messaging Service SID. SMS + warm transfer. |
 
 ---
 
@@ -87,14 +94,14 @@
 
 | Phase | Total Tasks | Done | Partial | Not Started |
 |-------|------------|------|---------|-------------|
-| Phase 1: Foundation | 8 + 5 extras | 9 | 0 | 4 |
-| Phase 2: Core Agents | 9 | 0 | 1 | 8 |
+| Phase 1: Foundation | 8 + 7 extras | 11 | 0 | 4 |
+| Phase 2: Core Agents | 10 | 10 | 0 | 0 |
 | Phase 3: Safety & Testing | 5 | 0 | 1 | 4 |
 | Phase 4: Frontend & Polish | 5 | 0 | 0 | 5 |
 | Phase 5: Demo Validation | 5 | 0 | 0 | 5 |
-| **Total** | **37** | **9** | **2** | **26** |
+| **Total** | **40** | **21** | **1** | **13** |
 
-**Test count: 55 passing / 0 failing**
+**Test count: 160 passing / 0 failing**
 
 ---
 
@@ -102,10 +109,10 @@
 
 ```
 Databricks creds needed → 1.4, 1.5
-Twilio/ElevenLabs creds needed → 1.7, 2.8
-Google Calendar creds needed → 2.5 (calendar integration part)
 GCS bucket created → 1.6
-All Phase 2 agents → Phase 3 safety tests
+Twilio/ElevenLabs setup → 1.7 (human task, creds working)
+Google Calendar → DEFERRED to post-hackathon (see plan Section 14.1)
+Phase 2 agents DONE → Phase 3 safety tests unblocked
 Phase 4 deploy → Phase 5 demo validation
 ```
 
@@ -122,3 +129,9 @@ Phase 4 deploy → Phase 5 demo validation
 | DB session uses nested transaction for tests | Each test gets a session scoped to a transaction that rolls back | 2026-02-07 |
 | mary_id app-level not DB trigger | Plan called for DB trigger; app-level HMAC is safer (pepper stays out of DB, easier to test). UNIQUE constraint prevents raw inserts. | 2026-02-07 |
 | Per-call context injection via ElevenLabs API | dynamic_variables for template vars + conversation_config_override for system prompt with trial criteria. Overrides must be enabled in ElevenLabs Security settings. | 2026-02-07 |
+| Google Calendar deferred to post-hackathon | MVP uses Postgres slot management (SELECT FOR UPDATE). Calendar adds OAuth complexity + BAA gap. Post-hackathon plan in Section 14.1. | 2026-02-07 |
+| trial_id is String(100) PK, not UUID | Plan specifies string PKs for trials (e.g. "diabetes-study-a"). UUID was wrong; fixed across models, CRUD, agents, tests. | 2026-02-08 |
+| Safety gate uses callback, not direct DB import | shared/ must not import from db/ (architecture rule). on_trigger callback lets caller provide handoff_queue write logic. | 2026-02-08 |
+| ElevenLabs agent_phone_number_id from config | agent_phone_number_id is the agent's outbound number (Settings); customer_number is the participant's phone (per-call). | 2026-02-08 |
+| Identity attempts tracked in contactability JSONB | Avoids adding a column; identity_attempts counter in JSONB field. Handoff after MAX_IDENTITY_ATTEMPTS=2. | 2026-02-08 |
+| Idempotency keys on all comms outbound | Format: comms-{participant_id}-{template_id}-{channel}. Passed to log_event for dedup. | 2026-02-08 |

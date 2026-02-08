@@ -37,10 +37,12 @@ class Settings(BaseSettings):
     twilio_account_sid: str = ""
     twilio_auth_token: str = ""
     twilio_phone_number: str = ""
+    twilio_messaging_service_sid: str = ""
 
     # ElevenLabs
     elevenlabs_api_key: str = ""
     elevenlabs_agent_id: str = ""
+    elevenlabs_agent_phone_number_id: str = ""
 
     # Databricks
     databricks_server_hostname: str = ""

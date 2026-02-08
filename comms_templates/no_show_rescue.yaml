@@ -1,0 +1,8 @@
+name: no_show_rescue
+channel: sms
+description: T+0 no-show rescue message.
+body: >
+  Hi {{ participant_name }}, we noticed you may have missed your
+  {{ trial_name }} appointment at {{ site_name }} today. We would
+  love to reschedule at a time that works for you. Reply RESCHEDULE
+  or call {{ coordinator_phone }}.

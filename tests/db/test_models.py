@@ -12,7 +12,6 @@ from src.db.models import (
     Ride,
 )
 
-
 EXPECTED_TABLES = {
     "participants",
     "participant_trials",
@@ -22,13 +21,14 @@ EXPECTED_TABLES = {
     "events",
     "handoff_queue",
     "rides",
+    "trials",
 }
 
 
 def test_all_tables_defined() -> None:
-    """All 8 operational tables are defined in metadata."""
+    """All 9 operational tables are defined in metadata."""
     table_names = set(Base.metadata.tables.keys())
-    assert EXPECTED_TABLES == table_names
+    assert table_names == EXPECTED_TABLES
 
 
 def test_participant_table_name() -> None:
@@ -86,9 +86,7 @@ def test_idempotency_key_is_unique() -> None:
 def test_participant_trial_unique_constraint() -> None:
     """Each participant-trial pair is unique."""
     constraints = [
-        c.name
-        for c in ParticipantTrial.__table__.constraints
-        if hasattr(c, "name") and c.name
+        c.name for c in ParticipantTrial.__table__.constraints if hasattr(c, "name") and c.name
     ]
     assert "uq_participant_trial" in constraints
 

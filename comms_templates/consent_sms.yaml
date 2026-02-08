@@ -1,0 +1,7 @@
+name: consent_sms
+channel: sms
+description: SMS consent confirmation after voice disclosure.
+body: >
+  Hi {{ participant_name }}, this is Mary from {{ site_name }}.
+  We spoke about a clinical research study. Reply YES to confirm
+  you'd like to continue, or STOP to opt out.

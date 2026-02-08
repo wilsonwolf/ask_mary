@@ -3,13 +3,20 @@
 This is an inline check, not a full agent. It runs on every agent
 response to detect handoff triggers before the response reaches
 the participant. Instrumented with timing for observability.
+
+When a trigger fires and an on_trigger callback is provided, the
+gate invokes the callback with the SafetyResult. The caller (e.g.
+orchestrator) provides the callback to write handoff_queue entries.
 """
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+OnTriggerCallback = Callable[["SafetyResult"], Awaitable[None]]
 
 SAFETY_TRIGGERS = [
     "medical_advice",
@@ -44,6 +51,8 @@ class SafetyResult:
 async def evaluate_safety(
     response: str,
     context: dict | None = None,
+    *,
+    on_trigger: OnTriggerCallback | None = None,
 ) -> SafetyResult:
     """Run the safety gate on an agent response.
 
@@ -51,9 +60,13 @@ async def evaluate_safety(
     consent issues, threats, misunderstanding, language mismatch).
     Every invocation is instrumented with timing for observability.
 
+    When on_trigger is provided, it is called with the SafetyResult on
+    any trigger. The orchestrator uses this to write handoff_queue entries.
+
     Args:
         response: The agent's proposed response text.
         context: Conversation context (participant state, history).
+        on_trigger: Optional async callback invoked on trigger.
 
     Returns:
         SafetyResult with trigger status and timing.
@@ -62,6 +75,9 @@ async def evaluate_safety(
     result = _check_triggers(response, context or {})
     elapsed_ms = (time.perf_counter() - start) * 1000
     result.elapsed_ms = elapsed_ms
+
+    if result.triggered and on_trigger:
+        await on_trigger(result)
 
     logger.info(
         "safety_gate",
@@ -114,6 +130,27 @@ def _check_triggers(response: str, context: dict) -> SafetyResult:
             triggered=True,
             trigger_type="anger_threats",
             severity="HANDOFF_NOW",
+        )
+
+    if _matches_adverse_event(text_lower):
+        return SafetyResult(
+            triggered=True,
+            trigger_type="adverse_event",
+            severity="HANDOFF_NOW",
+        )
+
+    if _matches_repeated_misunderstanding(context):
+        return SafetyResult(
+            triggered=True,
+            trigger_type="repeated_misunderstanding",
+            severity="CALLBACK_TICKET",
+        )
+
+    if _matches_language_mismatch(context):
+        return SafetyResult(
+            triggered=True,
+            trigger_type="language_mismatch",
+            severity="CALLBACK_TICKET",
         )
 
     return SafetyResult(triggered=False)
@@ -197,3 +234,51 @@ def _matches_anger_threats(text: str) -> bool:
         "going to hurt",
     ]
     return any(p in text for p in patterns)
+
+
+def _matches_adverse_event(text: str) -> bool:
+    """Detect adverse event reports.
+
+    Args:
+        text: Lowercased response text.
+
+    Returns:
+        True if adverse event pattern detected.
+    """
+    patterns = [
+        "adverse reaction",
+        "adverse event",
+        "side effect",
+        "allergic reaction",
+        "got worse",
+        "bad reaction",
+    ]
+    return any(p in text for p in patterns)
+
+
+def _matches_repeated_misunderstanding(context: dict) -> bool:
+    """Detect repeated misunderstanding from context.
+
+    Args:
+        context: Conversation context with misunderstanding_count.
+
+    Returns:
+        True if misunderstanding count exceeds threshold.
+    """
+    return context.get("misunderstanding_count", 0) >= 3
+
+
+def _matches_language_mismatch(context: dict) -> bool:
+    """Detect language mismatch from context.
+
+    Args:
+        context: Conversation context with language info.
+
+    Returns:
+        True if detected language differs from expected.
+    """
+    detected = context.get("detected_language")
+    expected = context.get("expected_language")
+    if detected and expected:
+        return detected != expected
+    return False

@@ -1,7 +1,7 @@
 """Operational database CRUD operations for Cloud SQL Postgres."""
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -54,8 +54,8 @@ async def create_participant(
         phone=phone,
         language=language,
         identity_status="unverified",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     session.add(participant)
     await session.flush()
@@ -75,9 +75,7 @@ async def get_participant_by_mary_id(
     Returns:
         Participant if found, else None.
     """
-    result = await session.execute(
-        select(Participant).where(Participant.mary_id == mary_id)
-    )
+    result = await session.execute(select(Participant).where(Participant.mary_id == mary_id))
     return result.scalar_one_or_none()
 
 
@@ -123,8 +121,8 @@ async def enroll_in_trial(
         pipeline_status="new",
         enrollment_status="screening",
         eligibility_status="pending",
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
     )
     session.add(pt)
     await session.flush()
@@ -157,7 +155,7 @@ async def create_appointment(
     Returns:
         Created Appointment record.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     appointment = Appointment(
         appointment_id=uuid.uuid4(),
         participant_id=participant_id,
@@ -218,7 +216,7 @@ async def create_handoff(
         coordinator_phone=coordinator_phone,
         callback_number=callback_number,
         due_at=due_at,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     session.add(handoff)
     await session.flush()
@@ -247,7 +245,7 @@ async def create_ride(
     Returns:
         Created Ride record.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     ride = Ride(
         ride_id=uuid.uuid4(),
         appointment_id=appointment_id,
@@ -294,7 +292,7 @@ async def create_conversation(
         agent_name=agent_name,
         trial_id=trial_id,
         status="active",
-        started_at=datetime.now(timezone.utc),
+        started_at=datetime.now(UTC),
     )
     session.add(conversation)
     await session.flush()

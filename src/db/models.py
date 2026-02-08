@@ -54,25 +54,17 @@ class Participant(Base):
     preferred_channel: Mapped[str | None] = mapped_column(String(20))
     best_time_to_reach: Mapped[str | None] = mapped_column(String(50))
     language: Mapped[str | None] = mapped_column(String(10), default="en")
-    identity_status: Mapped[str] = mapped_column(
-        String(20), default="unverified"
-    )
+    identity_status: Mapped[str] = mapped_column(String(20), default="unverified")
     dnc_flags: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     contactability: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     consent: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     caregiver: Mapped[dict | None] = mapped_column(JSONB)
-    contactability_risk: Mapped[str] = mapped_column(
-        String(10), default="none"
-    )
+    contactability_risk: Mapped[str] = mapped_column(String(10), default="none")
     outreach_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_action_type: Mapped[str | None] = mapped_column(String(30))
-    recheck_scheduled_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    recheck_scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
     )
@@ -104,28 +96,20 @@ class ParticipantTrial(Base):
     )
     trial_id: Mapped[str] = mapped_column(String(100), index=True)
     pipeline_status: Mapped[str] = mapped_column(String(20), default="new")
-    enrollment_status: Mapped[str] = mapped_column(
-        String(20), default="screening"
-    )
-    eligibility_status: Mapped[str] = mapped_column(
-        String(20), default="pending"
-    )
+    enrollment_status: Mapped[str] = mapped_column(String(20), default="screening")
+    eligibility_status: Mapped[str] = mapped_column(String(20), default="pending")
     eligibility_confidence: Mapped[float | None] = mapped_column(Float)
     screening_responses: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     ehr_discrepancies: Mapped[dict | None] = mapped_column(JSONB)
     adversarial_recheck_done: Mapped[bool] = mapped_column(Boolean, default=False)
     adversarial_results: Mapped[dict | None] = mapped_column(JSONB)
     enrolled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
-    __table_args__ = (
-        UniqueConstraint("participant_id", "trial_id", name="uq_participant_trial"),
-    )
+    __table_args__ = (UniqueConstraint("participant_id", "trial_id", name="uq_participant_trial"),)
 
     participant: Mapped["Participant"] = relationship(back_populates="trials")
 
@@ -156,18 +140,14 @@ class Appointment(Base):
     prep_instructions: Mapped[str | None] = mapped_column(Text)
     estimated_duration_min: Mapped[int | None] = mapped_column(Integer)
     slot_held_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    confirmation_due_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    confirmation_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     teach_back_passed: Mapped[bool | None] = mapped_column(Boolean)
     teach_back_attempts: Mapped[int] = mapped_column(Integer, default=0)
     cancellation_reason: Mapped[str | None] = mapped_column(String(200))
     no_show_reason: Mapped[str | None] = mapped_column(String(200))
     outcome_reason_code: Mapped[str | None] = mapped_column(String(50))
     slot_released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
     )
@@ -204,15 +184,11 @@ class Conversation(Base):
     full_transcript: Mapped[dict | None] = mapped_column(JSONB)
     summary: Mapped[dict | None] = mapped_column(JSONB)
     handoff_reason: Mapped[str | None] = mapped_column(String(100))
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     participant: Mapped["Participant"] = relationship(back_populates="conversations")
-    reasoning: Mapped[list["AgentReasoning"]] = relationship(
-        back_populates="conversation"
-    )
+    reasoning: Mapped[list["AgentReasoning"]] = relationship(back_populates="conversation")
 
 
 class Event(Base):
@@ -239,13 +215,9 @@ class Event(Base):
     event_type: Mapped[str] = mapped_column(String(50), index=True)
     payload: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     provenance: Mapped[str | None] = mapped_column(String(20))
-    idempotency_key: Mapped[str | None] = mapped_column(
-        String(200), unique=True
-    )
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), unique=True)
     channel: Mapped[str | None] = mapped_column(String(20))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     __table_args__ = (
         Index(
@@ -291,9 +263,7 @@ class HandoffQueue(Base):
     handoff_packet: Mapped[dict | None] = mapped_column(JSONB)
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     assigned_to: Mapped[str | None] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     participant: Mapped["Participant"] = relationship(back_populates="handoffs")
@@ -325,15 +295,42 @@ class Ride(Base):
     status: Mapped[str] = mapped_column(String(20), default="pending")
     failure_reason: Mapped[str | None] = mapped_column(String(200))
     return_trip: Mapped[bool] = mapped_column(Boolean, default=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
     appointment: Mapped["Appointment"] = relationship(back_populates="rides")
     participant: Mapped["Participant"] = relationship(back_populates="rides")
+
+
+class Trial(Base):
+    """Clinical trial definition.
+
+    Attributes:
+        trial_id: Primary key string (matches ParticipantTrial.trial_id).
+        trial_name: Human-readable trial name.
+    """
+
+    __tablename__ = "trials"
+
+    trial_id: Mapped[str] = mapped_column(
+        String(100), primary_key=True
+    )
+    trial_name: Mapped[str] = mapped_column(String(200))
+    inclusion_criteria: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    exclusion_criteria: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    visit_templates: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    pi_name: Mapped[str | None] = mapped_column(String(200))
+    coordinator_name: Mapped[str | None] = mapped_column(String(200))
+    coordinator_phone: Mapped[str | None] = mapped_column(String(20))
+    site_address: Mapped[str | None] = mapped_column(String(300))
+    site_name: Mapped[str | None] = mapped_column(String(200))
+    calendar_id: Mapped[str | None] = mapped_column(String(200))
+    max_distance_km: Mapped[float | None] = mapped_column(Float, default=80.0)
+    operating_hours: Mapped[dict | None] = mapped_column(JSONB, default=dict)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
 
 class AgentReasoning(Base):
@@ -359,8 +356,6 @@ class AgentReasoning(Base):
     reasoning_trace: Mapped[dict | None] = mapped_column(JSONB)
     tool_calls: Mapped[dict | None] = mapped_column(JSONB)
     safety_gate_log: Mapped[dict | None] = mapped_column(JSONB)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     conversation: Mapped["Conversation"] = relationship(back_populates="reasoning")

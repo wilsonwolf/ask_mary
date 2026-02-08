@@ -58,12 +58,14 @@ def generate_mary_id(
     if not pepper:
         raise ValueError("MARY_ID_PEPPER must be set for participant ID generation")
 
-    canonical = "|".join([
-        canonicalize_name(first_name),
-        canonicalize_name(last_name),
-        dob.isoformat(),
-        canonicalize_phone(phone),
-    ])
+    canonical = "|".join(
+        [
+            canonicalize_name(first_name),
+            canonicalize_name(last_name),
+            dob.isoformat(),
+            canonicalize_phone(phone),
+        ]
+    )
 
     return hmac.new(
         key=pepper.encode("utf-8"),

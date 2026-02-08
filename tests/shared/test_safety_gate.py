@@ -1,6 +1,6 @@
 """Tests for the safety gate inline check."""
 
-import pytest
+from unittest.mock import AsyncMock
 
 from src.shared.safety_gate import SafetyResult, evaluate_safety
 
@@ -36,11 +36,44 @@ class TestSafetyGateTriggers:
         assert result.trigger_type == "anger_threats"
         assert result.severity == "HANDOFF_NOW"
 
+    async def test_adverse_event_triggers(self) -> None:
+        """Adverse event report triggers HANDOFF_NOW."""
+        result = await evaluate_safety("I had an adverse reaction to the medication")
+        assert result.triggered is True
+        assert result.trigger_type == "adverse_event"
+        assert result.severity == "HANDOFF_NOW"
+
+    async def test_repeated_misunderstanding_triggers(self) -> None:
+        """Repeated misunderstanding triggers CALLBACK_TICKET."""
+        context = {"misunderstanding_count": 3}
+        result = await evaluate_safety("What do you mean?", context)
+        assert result.triggered is True
+        assert result.trigger_type == "repeated_misunderstanding"
+        assert result.severity == "CALLBACK_TICKET"
+
+    async def test_language_mismatch_triggers(self) -> None:
+        """Language mismatch triggers CALLBACK_TICKET."""
+        context = {"detected_language": "es", "expected_language": "en"}
+        result = await evaluate_safety("No entiendo nada de lo que dices", context)
+        assert result.triggered is True
+        assert result.trigger_type == "language_mismatch"
+        assert result.severity == "CALLBACK_TICKET"
+
+    async def test_misunderstanding_below_threshold_no_trigger(self) -> None:
+        """Misunderstanding count below 3 does not trigger."""
+        context = {"misunderstanding_count": 2}
+        result = await evaluate_safety("What do you mean?", context)
+        assert result.trigger_type != "repeated_misunderstanding" or not result.triggered
+
+    async def test_matching_language_no_trigger(self) -> None:
+        """Matching language does not trigger."""
+        context = {"detected_language": "en", "expected_language": "en"}
+        result = await evaluate_safety("Hello there", context)
+        assert result.trigger_type != "language_mismatch" or not result.triggered
+
     async def test_benign_response_no_trigger(self) -> None:
         """Normal conversation does not trigger."""
-        result = await evaluate_safety(
-            "Your appointment is scheduled for Tuesday at 10 AM."
-        )
+        result = await evaluate_safety("Your appointment is scheduled for Tuesday at 10 AM.")
         assert result.triggered is False
         assert result.trigger_type is None
 
@@ -62,6 +95,31 @@ class TestSafetyGateLatency:
         """Safety gate completes well under 1000ms hard ceiling."""
         result = await evaluate_safety("I'm having chest pain")
         assert result.elapsed_ms < 1000
+
+
+class TestOnTriggerCallback:
+    """Safety gate invokes on_trigger callback when triggered."""
+
+    async def test_callback_invoked_on_trigger(self) -> None:
+        """on_trigger callback is called when a trigger fires."""
+        callback = AsyncMock()
+        await evaluate_safety(
+            "I had an adverse reaction",
+            on_trigger=callback,
+        )
+        callback.assert_awaited_once()
+        result = callback.call_args[0][0]
+        assert result.triggered is True
+        assert result.trigger_type == "adverse_event"
+
+    async def test_callback_not_invoked_when_safe(self) -> None:
+        """on_trigger callback is not called for safe responses."""
+        callback = AsyncMock()
+        await evaluate_safety(
+            "Your appointment is Tuesday at 10 AM.",
+            on_trigger=callback,
+        )
+        callback.assert_not_awaited()
 
 
 class TestSafetyResult:
