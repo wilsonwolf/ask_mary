@@ -77,9 +77,25 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         Mention transport support early to increase conversion.
         Retry cadence: Voice #1 → SMS nudge → Voice #2 (diff time) → Voice #3 + final SMS.
         Log each attempt + outcome in events table.
+
+        PRE-CALL CONTEXT ASSEMBLY (before every outbound voice call):
+        Before initiating the Twilio/ElevenLabs call, the outreach agent assembles
+        per-call context by loading participant data (Postgres) and trial criteria
+        (Databricks trials table: inclusion_criteria, exclusion_criteria, trial_name,
+        site_name, coordinator_phone, visit_templates). This context is injected into
+        the ElevenLabs conversation via two mechanisms:
+        (1) Dynamic Variables — {{participant_name}}, {{trial_name}}, {{site_name}},
+            {{coordinator_phone}} — injected as template variables in the agent prompt.
+        (2) Overrides (conversation_config_override) — the system prompt and first_message
+            are overridden per-call with trial-specific inclusion/exclusion criteria and
+            participant-specific context. Overrides must be enabled in the ElevenLabs
+            agent Security settings.
+        The assembled context is passed via the ElevenLabs outbound call API.
+        This ensures the voice agent knows WHO it is calling, WHICH trial, and WHAT
+        the screening criteria are — without hardcoding any trial-specific logic.
       </description>
       <agents>outreach_agent</agents>
-      <apis>ElevenLabs Conversational AI, Twilio (SMS/WhatsApp/Voice)</apis>
+      <apis>ElevenLabs Conversational AI (dynamic variables + overrides), Twilio (SMS/WhatsApp/Voice)</apis>
       <gates>
         <gate id="G1" name="disclosure" required="true">
           Voice: "automated assistant" + "may be recorded" + "OK to continue?"
@@ -264,9 +280,19 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <agent name="orchestrator" role="Central coordinator — routes conversations, enforces gate sequence">
       <sdk>OpenAI Agents SDK (handoff pattern)</sdk>
     </agent>
-    <agent name="outreach_agent" role="Initiates contact, enforces DNC, manages retry cadence">
+    <agent name="outreach_agent" role="Initiates contact, enforces DNC, manages retry cadence, assembles per-call context">
       <sdk>OpenAI Agents SDK</sdk>
-      <tools>Twilio, ElevenLabs</tools>
+      <tools>Twilio, ElevenLabs (outbound call API with dynamic_variables + conversation_config_override)</tools>
+      <pre_call_context>
+        Before each outbound call:
+        1. Load participant record from Postgres (name, phone, address, language, trial enrollment)
+        2. Load trial criteria from Databricks trials table (inclusion_criteria, exclusion_criteria,
+           trial_name, site_name, coordinator_phone, visit_templates, max_distance_km)
+        3. Assemble dynamic_variables dict: participant_name, trial_name, site_name, coordinator_phone
+        4. Build conversation_config_override: system prompt with trial criteria + participant context,
+           first_message personalized with participant name + trial name
+        5. Initiate ElevenLabs outbound call via API with assembled context
+      </pre_call_context>
     </agent>
     <agent name="identity_agent" role="Verifies identity (DOB+ZIP), detects duplicates/wrong-person">
       <sdk>OpenAI Agents SDK</sdk>
@@ -490,7 +516,9 @@ graph TB
     SCHED_AGT --> GCAL
     TRANS_AGT --> UBER
 
-    OUTREACH_AGT --> PG_PARTS
+    OUTREACH_AGT -->|"pre-call:<br/>load participant"| PG_PARTS
+    OUTREACH_AGT -->|"pre-call:<br/>load trial criteria"| DB_TRIALS
+    OUTREACH_AGT -->|"context injection:<br/>dynamic_variables +<br/>config_override"| EL
     ID_AGT --> PG_PARTS
     SCREEN_AGT --> PG_PARTS
     SCREEN_AGT --> DB_TRIALS
@@ -546,7 +574,12 @@ sequenceDiagram
         OUT->>PG: Log event (outreach_blocked)
         Note over OUT: STOP — do not contact
     else No DNC
-        OUT->>TW: Initiate call / SMS
+        Note over OUT,DB: Pre-call context assembly
+        OUT->>PG: Load participant record (name, phone, address, language)
+        OUT->>DB: Load trial criteria (inclusion/exclusion, site, templates)
+        Note over OUT,EL: Inject context via dynamic_variables + config_override
+        OUT->>EL: Initiate outbound call via API (participant context + trial criteria)
+        EL->>TW: Place outbound call to participant
         TW->>EL: Audio stream (voice)
         EL->>O: Transcribed intent
 
@@ -736,6 +769,8 @@ graph LR
 
 ```mermaid
 graph LR
+    PRE["Pre-call Context<br/>Assembly<br/>(Outreach Agent)"] -->|"dynamic_variables +<br/>config_override<br/>(participant + trial criteria)"| C
+
     A["Participant speaks<br/>(phone)"] -->|PSTN| B["Twilio<br/>(SIP trunk)"]
     B -->|WebSocket<br/>audio stream| C["ElevenLabs<br/>Conv AI 2.0"]
     C -->|STT + LLM<br/>reasoning| D["Agent Response<br/>(text)"]
@@ -743,6 +778,7 @@ graph LR
     E -->|WebSocket<br/>audio| B
     B -->|PSTN| A
 
+    style PRE fill:#9cf,stroke:#333
     style C fill:#f9f,stroke:#333
     style D fill:#ff9,stroke:#333
 
@@ -750,6 +786,8 @@ graph LR
 ```
 
 **Key latency decision**: ElevenLabs Conversational AI 2.0 handles STT + LLM reasoning + TTS in a single pipeline with sub-second turnaround. The LLM backing the voice agent can be Claude or GPT — configured in the ElevenLabs dashboard. Our specialized agents run as tool calls within that LLM context, keeping everything in-stream rather than adding network hops.
+
+**Per-call context injection**: Before each outbound call, the outreach agent loads participant data (Postgres) and trial criteria (Databricks) and injects them into the ElevenLabs conversation via `dynamic_variables` (template variables like `{{participant_name}}`, `{{trial_name}}`) and `conversation_config_override` (system prompt with inclusion/exclusion criteria, personalized first_message). This happens once at call initiation — no latency impact during the conversation.
 
 ---
 
@@ -817,6 +855,19 @@ ElevenLabs handles the **voice layer**:
 - Native Twilio phone number integration (both inbound and outbound)
 - The backing LLM (Claude or GPT) runs our agent logic via server-side tool integration
 - Handles conversational cues ("um", "ah") for natural turn-taking
+
+**Per-call personalization** (two mechanisms):
+- **Dynamic Variables**: Define `{{variable_name}}` placeholders in the ElevenLabs agent prompt. At call initiation, pass values via `dynamic_variables` dict in the API call. Used for: `{{participant_name}}`, `{{trial_name}}`, `{{site_name}}`, `{{coordinator_phone}}`. System variables `system__caller_id`, `system__call_sid` are available automatically.
+- **Overrides** (`conversation_config_override`): Override the system prompt, first_message, language, or voice per-call. Used to inject trial-specific inclusion/exclusion criteria into the system prompt so the ElevenLabs LLM knows what screening questions to ask. Must enable "Overrides" in agent Security settings. JSON structure:
+  ```json
+  {
+    "agent": {
+      "prompt": {"prompt": "You are Mary, calling {{participant_name}} about {{trial_name}}. Inclusion: ... Exclusion: ..."},
+      "first_message": "Hi {{participant_name}}, this is Mary calling from..."
+    }
+  }
+  ```
+- **Secret variables**: Prefix with `secret__` to prevent them from being sent to the LLM (e.g. `secret__auth_token` for webhook authentication).
 
 ---
 
@@ -1433,26 +1484,26 @@ on PR to main:
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
 | 1.1 Project scaffolding | Claude Code | 30 min | FastAPI project structure, pyproject.toml, Dockerfile, Cloud Run config, `comms_templates/` dir with YAML stubs |
-| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides. mary_id generation trigger. |
+| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides. mary_id generated app-side via HMAC-SHA256 (not a DB trigger — pepper stays out of DB; UNIQUE constraint prevents raw inserts). |
 | 1.3 Operational DB module | Claude Code | 40 min | `db/postgres.py` — SQLAlchemy models + asyncpg CRUD. Events table append-only (no UPDATE/DELETE). Idempotency key enforcement. Cloud Tasks dedup guard (task_idempotency_key check). Twilio DNC opt-out sync. |
 | 1.4 Databricks analytics tables | Claude Code | 20 min | Create Delta Lake tables (trials, participant_ehr, conversations_archive, audit_log), seed with test trial/EHR data |
 | 1.5 Analytics DB module | Claude Code | 15 min | `db/databricks.py` — read-only connector for trial criteria, EHR lookups, geo distance limits |
 | 1.6 GCS audio bucket setup | Claude Code | 10 min | Create `ask-mary-audio` bucket, IAM policies, signed URL helper function |
-| 1.7 ElevenLabs + Twilio setup | Human | 45 min | Buy Twilio number, create ElevenLabs agent, configure native integration |
+| 1.7 ElevenLabs + Twilio setup | Human | 45 min | Buy Twilio number, create ElevenLabs agent (enable Overrides + Authentication in Security settings, set up `{{variable}}` prompt template), configure native Twilio integration (import number into ElevenLabs, auto-configures webhook — no SIP trunk needed) |
 | 1.8 OpenAI Agents SDK skeleton | Claude Code | 45 min | Orchestrator + all agent stubs with handoff pattern + safety_gate inline function |
 
 ### Phase 2: Core Agents (Hours 3-7)
 
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
-| 2.1 Outreach Agent | Claude Code | 30 min | DNC enforcement, retry cadence logic (3 voice + SMS), consent capture, events logging |
+| 2.1 Outreach Agent | Claude Code | 45 min | DNC enforcement, retry cadence logic (3 voice + SMS), consent capture, events logging. **Pre-call context assembly**: load participant (Postgres) + trial criteria (Databricks), build dynamic_variables + conversation_config_override, initiate ElevenLabs outbound call via API with injected context. |
 | 2.2 Identity Agent | Claude Code | 30 min | DOB+ZIP verification, duplicate/wrong-person detection, identity_status update |
 | 2.3 Screening Agent | Claude Code | 60 min | Trial criteria matching, hard excludes first, EHR cross-reference, provenance annotation, caregiver auth, eligibility_status output |
 | 2.4 Safety Gate | Claude Code | 30 min | Blocking pre-check with Langfuse latency instrumentation, 7 trigger types, handoff_queue writes, severity routing, hard ceiling 1000ms |
 | 2.5 Scheduling Agent | Claude Code | 60 min | Geo/distance gate, Google Calendar MCP, slot reservation (SELECT FOR UPDATE), 12h confirmation window, teach-back, Cloud Tasks scheduling |
 | 2.6 Transport Agent | Claude Code | 30 min | Uber Health mock + interface, pickup address verification, T-24h/T-2h reconfirmation scheduling |
 | 2.7 Comms Agent | Claude Code | 45 min | Event-driven cadence (T-48h prep, T-24h confirm, T-2h check-in, T+0 rescue), idempotency keys, unreachable workflow, channel switching |
-| 2.8 ElevenLabs voice integration | Claude Code | 30 min | Connect agent SDK to ElevenLabs server-side tools, audio recording → GCS |
+| 2.8 ElevenLabs voice integration | Claude Code | 45 min | Connect agent SDK to ElevenLabs server-side tools, audio recording → GCS. **Context injection**: build ElevenLabs outbound call helper in `services/elevenlabs_client.py` that accepts participant + trial data, constructs dynamic_variables + conversation_config_override payload, and calls ElevenLabs API. Configure agent prompt template with `{{variable}}` placeholders. |
 | 2.9 Comms templates | Claude Code | 15 min | Write all `comms_templates/*.yaml` files with Jinja2 variables |
 
 ### Phase 3: Safety & Testing (Hours 7-9)
@@ -1589,17 +1640,28 @@ The iteration workflow is:
 
 ### Q2: ElevenLabs LLM Configuration
 
-**Status**: RESOLVED — Dual approach.
+**Status**: RESOLVED — Dual approach + per-call context injection.
 
-**Phase 1 (Hackathon)**: Configure backing LLM in ElevenLabs dashboard (fastest setup).
+**Phase 1 (Hackathon)**: Configure backing LLM in ElevenLabs dashboard (fastest setup). Per-call context (participant data + trial criteria) is injected via `dynamic_variables` and `conversation_config_override` in the outbound call API. The ElevenLabs agent prompt uses `{{variable}}` placeholders that are filled at call time. Overrides replace the system prompt with trial-specific inclusion/exclusion criteria.
 
 **Phase 2 (Post-hackathon)**: Build a Custom LLM server endpoint that routes to our OpenAI Agents SDK backend. ElevenLabs supports this natively — the custom LLM endpoint must follow the **OpenAI Chat Completion request/response format**. Our FastAPI server can expose an `/v1/chat/completions` endpoint that internally routes to our agent orchestrator.
 
 **Key finding**: ElevenLabs also supports **Server Tools** (webhooks called during conversation) and **MCP server connections**, so even in Phase 1 we can have the ElevenLabs-hosted LLM call back into our agent tools without a full custom LLM integration.
 
 **Architecture**:
-- Phase 1: `ElevenLabs (hosted LLM) → Server Tools (webhook) → Our FastAPI → Agent SDK`
-- Phase 2: `ElevenLabs (custom LLM) → Our FastAPI /v1/chat/completions → Agent SDK`
+- Phase 1: `Outreach Agent (context assembly) → ElevenLabs API (dynamic_variables + config_override) → ElevenLabs (hosted LLM with per-call prompt) → Server Tools (webhook) → Our FastAPI → Agent SDK`
+- Phase 2: `Outreach Agent (context assembly) → ElevenLabs API (dynamic_variables + config_override) → ElevenLabs (custom LLM) → Our FastAPI /v1/chat/completions → Agent SDK`
+
+**Per-call context flow**:
+```
+Outreach Agent decides to call participant X for trial Y
+  → Load participant from Postgres (name, phone, address, language, enrollment)
+  → Load trial from Databricks (inclusion_criteria, exclusion_criteria, site_name, visit_templates)
+  → Build dynamic_variables: {participant_name, trial_name, site_name, coordinator_phone}
+  → Build conversation_config_override: {agent.prompt.prompt: <system prompt with criteria>, agent.first_message: <personalized greeting>}
+  → POST to ElevenLabs outbound call API with assembled context
+  → ElevenLabs agent speaks with full trial + participant awareness
+```
 
 ### Q3: Uber Health Access
 
@@ -1693,7 +1755,7 @@ These items require manual human action before the hackathon clock starts:
 | GCS audio bucket | P0 | 5 min | Create `ask-mary-audio` bucket in same region, set IAM policies for service account. |
 | Databricks workspace + SQL warehouse | P0 | 15 min | For analytics layer. See Q4 above. |
 | Twilio account + phone number | P0 | 10 min | See Q5 above. Ensure Voice + SMS capabilities. |
-| ElevenLabs account + agent creation | P0 | 15 min | Create Conversational AI agent in dashboard. Enable call recording if available. |
+| ElevenLabs account + agent creation | P0 | 15 min | Create Conversational AI agent in dashboard. Enable call recording if available. **Enable Overrides + Authentication in Security settings.** Set up prompt template with `{{participant_name}}`, `{{trial_name}}`, `{{site_name}}`, `{{coordinator_phone}}` placeholders. |
 | Google Calendar service account | P1 | 10 min | OAuth credentials for calendar access |
 | OpenAI API key | P0 | 5 min | For Agents SDK |
 | Anthropic API key | P0 | 5 min | For Claude Code dev workflow |
@@ -1759,6 +1821,10 @@ The live demo is the **ultimate success gate** for the project. It must run end-
 - [Langfuse — OpenAI Agents SDK Integration](https://langfuse.com/guides/cookbook/example_evaluating_openai_agents)
 - [ElevenLabs — Custom LLM Integration](https://elevenlabs.io/docs/agents-platform/customization/llm/custom-llm)
 - [ElevenLabs — Server Tools](https://elevenlabs.io/docs/agents-platform/customization/tools/server-tools)
+- [ElevenLabs — Dynamic Variables](https://elevenlabs.io/docs/eleven-agents/customization/personalization/dynamic-variables)
+- [ElevenLabs — Overrides (conversation_config_override)](https://elevenlabs.io/docs/eleven-agents/customization/personalization/overrides)
+- [ElevenLabs — Twilio Personalization](https://elevenlabs.io/docs/agents-platform/customization/personalization/twilio-personalization)
+- [ElevenLabs — Batch Calling](https://elevenlabs.io/docs/agents-platform/phone-numbers/batch-calls)
 - [ElevenLabs — Integrating External Agents](https://elevenlabs.io/blog/integrating-complex-external-agents)
 - [ElevenLabs — MCP Support](https://elevenlabs.io/docs/agents-platform/customization/tools/mcp)
 - [RaySurfer — Semantic Code Caching SDK](https://www.raysurfer.com/)

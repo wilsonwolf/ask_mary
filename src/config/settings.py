@@ -1,0 +1,87 @@
+"""Application configuration loaded from environment variables."""
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Central configuration for Ask Mary.
+
+    Args loaded from .env file and environment variables.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # GCP
+    gcp_project_id: str = ""
+    gcp_region: str = "us-west2"
+
+    # Cloud SQL
+    cloud_sql_instance_connection: str = ""
+    cloud_sql_password: str = ""
+    cloud_sql_database: str = "ask_mary_dev"
+    cloud_sql_user: str = "postgres"
+    cloud_sql_host: str = "127.0.0.1"
+    cloud_sql_port: int = 5432
+
+    # Participant ID hashing
+    mary_id_pepper: str = ""
+
+    # OpenAI
+    openai_api_key: str = ""
+
+    # Twilio
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_phone_number: str = ""
+
+    # ElevenLabs
+    elevenlabs_api_key: str = ""
+    elevenlabs_agent_id: str = ""
+
+    # Databricks
+    databricks_server_hostname: str = ""
+    databricks_http_path: str = ""
+    databricks_token: str = ""
+
+    # Google Calendar
+    google_calendar_credentials_path: str = ""
+    google_calendar_id: str = ""
+
+    # GitHub
+    github_token: str = ""
+
+    # Anthropic
+    anthropic_api_key: str = ""
+
+    @property
+    def database_url(self) -> str:
+        """Build async Postgres connection URL via Cloud SQL Auth Proxy."""
+        return (
+            f"postgresql+asyncpg://{self.cloud_sql_user}"
+            f":{self.cloud_sql_password}"
+            f"@{self.cloud_sql_host}:{self.cloud_sql_port}"
+            f"/{self.cloud_sql_database}"
+        )
+
+    @property
+    def database_url_sync(self) -> str:
+        """Build sync Postgres connection URL (for Alembic migrations)."""
+        return (
+            f"postgresql://{self.cloud_sql_user}"
+            f":{self.cloud_sql_password}"
+            f"@{self.cloud_sql_host}:{self.cloud_sql_port}"
+            f"/{self.cloud_sql_database}"
+        )
+
+
+def get_settings() -> Settings:
+    """Return a cached Settings instance.
+
+    Returns:
+        Application settings loaded from env.
+    """
+    return Settings()
