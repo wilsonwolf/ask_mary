@@ -1,6 +1,9 @@
 """FastAPI application factory."""
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.config.settings import get_settings
 
 
 def create_app() -> FastAPI:
@@ -15,11 +18,24 @@ def create_app() -> FastAPI:
         version="0.1.0",
     )
 
+    settings = get_settings()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     app.include_router(_health_router())
 
+    from src.api.dashboard import router as dashboard_router
+    from src.api.dashboard import ws_router
     from src.api.webhooks import router as webhooks_router
 
     app.include_router(webhooks_router)
+    app.include_router(dashboard_router)
+    app.include_router(ws_router)
 
     return app
 

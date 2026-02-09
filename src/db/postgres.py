@@ -262,6 +262,30 @@ async def create_ride(
     return ride
 
 
+async def get_participant_trial(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+) -> ParticipantTrial | None:
+    """Look up a participant-trial enrollment by composite key.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+
+    Returns:
+        ParticipantTrial if found, else None.
+    """
+    result = await session.execute(
+        select(ParticipantTrial).where(
+            ParticipantTrial.participant_id == participant_id,
+            ParticipantTrial.trial_id == trial_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_conversation(
     session: AsyncSession,
     *,

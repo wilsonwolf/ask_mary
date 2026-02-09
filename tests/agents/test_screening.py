@@ -28,10 +28,15 @@ class TestScreeningAgentDefinition:
 class TestGetScreeningCriteria:
     """Trial criteria retrieval for screening."""
 
-    async def test_returns_criteria(self) -> None:
-        """Returns inclusion and exclusion criteria."""
+    async def test_returns_criteria_with_trial_name(self) -> None:
+        """Returns inclusion, exclusion criteria, and trial name."""
         mock_session = AsyncMock()
+        mock_trial = MagicMock()
+        mock_trial.trial_name = "Test Trial"
         with patch(
+            "src.db.trials.get_trial",
+            return_value=mock_trial,
+        ), patch(
             "src.agents.screening.get_trial_criteria",
             return_value={
                 "inclusion": {"min_age": 18},
@@ -41,6 +46,7 @@ class TestGetScreeningCriteria:
             result = await get_screening_criteria(mock_session, "trial-1")
         assert result["inclusion"]["min_age"] == 18
         assert result["exclusion"]["pregnant"] is True
+        assert result["trial_name"] == "Test Trial"
 
 
 class TestCheckHardExcludes:

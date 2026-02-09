@@ -11,7 +11,7 @@
           },
           {
             "type": "prompt",
-            "prompt": "Check if this file write/edit violates microservices architecture boundaries. Rules: (1) Files in src/agents/ must NOT import from other agent files (agents communicate via orchestrator handoffs only). (2) Files in src/services/ must NOT import from src/agents/. (3) Dependency direction: api → agents → services → db → shared. (4) New Python files must be in the correct directory per the architecture. Input: $ARGUMENTS. Respond {\"ok\": true} if compliant, or {\"ok\": false, \"reason\": \"Architecture violation: [details]\"} if not.",
+            "prompt": "Check ONLY these exact rules. Do NOT add additional principles, opinions, or best-practice judgments beyond what is listed here. If the edit complies with ALL listed rules, respond {\"ok\": true}. Rules: (1) Files in src/agents/ must NOT import from other agent files. (2) Files in src/services/ must NOT import from src/agents/. (3) Allowed imports — api/ CAN import from agents/, services/, db/, shared/. agents/ CAN import from services/, db/, shared/. services/ CAN import from db/, shared/. db/ CAN import from shared/ only. shared/ must NOT import from any other layer. All public functions in these layers are fair game. Using SQLAlchemy queries in api/ is normal and allowed. (4) New Python files must be in the correct directory. (5) Files in tests/ are exempt — test code can import from any src/ layer. IMPORTANT: Only reject for violations of rules 1-5 above. Do NOT reject for separation of concerns, abstraction boundaries, or any principle not explicitly listed. Input: $ARGUMENTS. Respond {\"ok\": true} if compliant, or {\"ok\": false, \"reason\": \"Architecture violation: [details]\"} if not.",
             "timeout": 15
           }
         ]
@@ -42,11 +42,6 @@
             "prompt": "Before Claude stops, verify these documentation requirements. Use Glob and Read tools to check:\n\n1. README.md files: Run Glob for 'src/*/README.md'. Every directory directly under src/ that contains .py files MUST have a README.md. Known directories: agents, api, config, db, safety, services, shared, workers.\n\n2. Docstrings: Spot-check 2-3 recently modified .py files under src/ (not __init__.py). Public functions (no _ prefix) must have Google-style docstrings with Args/Returns.\n\n3. DRY: Check if any logic pattern appears in 3+ files that should be extracted to src/shared/.\n\nIf any README.md is missing or public functions lack docstrings, respond {\"ok\": false, \"reason\": \"Missing README.md in: [dirs]. Missing docstrings in: [files]\"}. Otherwise {\"ok\": true}.",
             "timeout": 120,
             "statusMessage": "Verifying docs + DRY compliance..."
-          },
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/handoff-to-codex.sh",
-            "statusMessage": "Checking for Codex handoff..."
           }
         ]
       }

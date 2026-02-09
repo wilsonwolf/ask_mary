@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
-from src.db.models import Conversation, ParticipantTrial
+from src.db.models import Conversation
+from src.db.postgres import get_participant_trial
 
 REQUIRED_STEPS = ["disclosure", "consent", "identity_verified"]
 
@@ -160,13 +161,9 @@ async def detect_answer_inconsistencies(
     Returns:
         Dict with inconsistencies_found bool and flagged_questions list.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
+    participant_trial = await get_participant_trial(
+        session, participant_id, trial_id,
     )
-    participant_trial = result.scalar_one_or_none()
 
     responses = participant_trial.screening_responses or {}
     flagged_questions: list[str] = []
@@ -213,13 +210,9 @@ async def audit_provenance(
     Returns:
         Dict with all_valid bool and missing_provenance list.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
+    participant_trial = await get_participant_trial(
+        session, participant_id, trial_id,
     )
-    participant_trial = result.scalar_one_or_none()
 
     responses = participant_trial.screening_responses or {}
     missing_provenance: list[str] = []

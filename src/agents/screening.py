@@ -6,14 +6,12 @@ The 'agents' import is the external SDK, NOT src/agents/.
 
 import uuid
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
 from src.db.events import log_event
-from src.db.models import ParticipantTrial
-from src.db.postgres import get_participant_by_id
+from src.db.postgres import get_participant_by_id, get_participant_trial
 from src.db.trials import get_trial_criteria
 
 
@@ -28,9 +26,16 @@ async def get_screening_criteria(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with inclusion and exclusion criteria.
+        Dict with inclusion, exclusion criteria, and trial name.
     """
-    return await get_trial_criteria(session, trial_id)
+    from src.db.trials import get_trial
+
+    trial = await get_trial(session, trial_id)
+    if trial is None:
+        return {"error": f"trial {trial_id} not found"}
+    criteria = await get_trial_criteria(session, trial_id)
+    criteria["trial_name"] = trial.trial_name
+    return criteria
 
 
 async def check_hard_excludes(
@@ -82,13 +87,7 @@ async def record_screening_response(
     Returns:
         Dict confirming the response was recorded.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
-    )
-    pt = result.scalar_one_or_none()
+    pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
         return {"error": "enrollment_not_found"}
 
@@ -121,13 +120,7 @@ async def determine_eligibility(
     Returns:
         Dict with eligibility status and reasons.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
-    )
-    pt = result.scalar_one_or_none()
+    pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
         return {"error": "enrollment_not_found"}
 

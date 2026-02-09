@@ -1,0 +1,40 @@
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/ask-mary:${SHORT_SHA}'
+      - '.'
+
+  # Push to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/ask-mary:${SHORT_SHA}'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'ask-mary'
+      - '--image'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/ask-mary:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--min-instances'
+      - '1'
+      - '--port'
+      - '8000'
+
+substitutions:
+  _REGION: us-west2
+  _REPO: ask-mary
+
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/ask-mary:${SHORT_SHA}'

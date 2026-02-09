@@ -47,6 +47,10 @@ class TestServerToolEndpoint:
             "src.api.webhooks.verify_identity",
             new_callable=AsyncMock,
             return_value=mock_result,
+        ), patch(
+            "src.api.webhooks.log_event",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -80,6 +84,10 @@ class TestServerToolEndpoint:
             "src.api.webhooks.run_safety_gate",
             new_callable=AsyncMock,
             return_value=mock_result,
+        ), patch(
+            "src.api.webhooks.log_event",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(

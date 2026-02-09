@@ -12,12 +12,11 @@ Per CLAUDE.md: Dependency direction: api -> agents -> services -> db -> shared
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
-from src.db.models import ParticipantTrial
+from src.db.postgres import get_participant_trial
 from src.services.cloud_tasks_client import enqueue_reminder
 
 RECHECK_DELAY_DAYS = 14
@@ -38,13 +37,7 @@ async def detect_deception(
     Returns:
         Dict with 'deception_detected' bool and 'discrepancies' list.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
-    )
-    pt = result.scalar_one_or_none()
+    pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
         return {"deception_detected": False, "discrepancies": []}
 
@@ -118,13 +111,7 @@ async def run_adversarial_rescreen(
     Returns:
         Dict with 'rescreened' bool and 'results' dict.
     """
-    result = await session.execute(
-        select(ParticipantTrial).where(
-            ParticipantTrial.participant_id == participant_id,
-            ParticipantTrial.trial_id == trial_id,
-        )
-    )
-    pt = result.scalar_one_or_none()
+    pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
         return {"rescreened": False, "error": "participant_trial_not_found"}
 

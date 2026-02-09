@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
+    # Dashboard / CORS
+    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    demo_participant_phone: str = ""
+    demo_trial_id: str = "diabetes-study-a"
+
     @property
     def database_url(self) -> str:
         """Build async Postgres connection URL via Cloud SQL Auth Proxy."""

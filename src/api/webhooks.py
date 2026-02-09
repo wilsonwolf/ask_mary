@@ -13,6 +13,7 @@ the integration point between ElevenLabs server tools and our agent logic.
 
 import logging
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -24,7 +25,9 @@ from src.agents.screening import (
     determine_eligibility,
     get_screening_criteria,
 )
+from src.api.event_bus import broadcast_event
 from src.config.settings import get_settings
+from src.db.events import log_event
 from src.db.session import get_async_session
 from src.services.gcs_client import (
     build_object_path,
@@ -79,6 +82,8 @@ async def handle_server_tool(
     """Handle ElevenLabs server tool callbacks.
 
     Routes tool calls to the appropriate agent helper function.
+    Business-event handlers persist canonical events to the DB
+    and broadcast them via WebSocket.
 
     Args:
         request: Server tool request payload.
@@ -104,6 +109,46 @@ async def handle_server_tool(
     return await handler(session, params)
 
 
+async def _log_and_broadcast(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    event_type: str,
+    payload: dict,
+    trial_id: str | None = None,
+) -> None:
+    """Persist a canonical event and broadcast via WebSocket.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        event_type: Canonical event type string.
+        payload: Event payload dict.
+        trial_id: Related trial identifier.
+    """
+    event = await log_event(
+        session,
+        participant_id=participant_id,
+        event_type=event_type,
+        trial_id=trial_id,
+        payload=payload,
+        provenance="system",
+        channel="voice",
+    )
+    if event is None:
+        return
+    await broadcast_event({
+        "type": "event",
+        "data": {
+            "event_id": str(event.event_id),
+            "event_type": event_type,
+            "participant_id": str(participant_id),
+            "trial_id": trial_id,
+            "payload": payload,
+            "created_at": str(event.created_at),
+        },
+    })
+
+
 async def _handle_verify_identity(
     session: AsyncSession,
     params: dict,
@@ -117,12 +162,21 @@ async def _handle_verify_identity(
     Returns:
         Identity verification result.
     """
-    return await verify_identity(
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await verify_identity(
         session,
-        uuid.UUID(params["participant_id"]),
+        participant_id,
         int(params["dob_year"]),
         params["zip_code"],
     )
+    event_type = (
+        "identity_verified" if result.get("verified") else "identity_failed"
+    )
+    await _log_and_broadcast(
+        session, participant_id, event_type, result,
+        trial_id=params.get("trial_id"),
+    )
+    return result
 
 
 async def _handle_detect_duplicate(
@@ -138,10 +192,13 @@ async def _handle_detect_duplicate(
     Returns:
         Duplicate detection result.
     """
-    return await detect_duplicate(
-        session,
-        uuid.UUID(params["participant_id"]),
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await detect_duplicate(session, participant_id)
+    await _log_and_broadcast(
+        session, participant_id, "duplicate_detected", result,
+        trial_id=params.get("trial_id"),
     )
+    return result
 
 
 async def _handle_get_screening_criteria(
@@ -149,6 +206,8 @@ async def _handle_get_screening_criteria(
     params: dict,
 ) -> dict:
     """Handle trial criteria lookup server tool call.
+
+    Read-only lookup — no business event persisted or broadcast.
 
     Args:
         session: Active database session.
@@ -165,6 +224,8 @@ async def _handle_check_hard_excludes(
     params: dict,
 ) -> dict:
     """Handle hard exclude check server tool call.
+
+    Intermediate check — no business event persisted or broadcast.
 
     Args:
         session: Active database session.
@@ -194,11 +255,25 @@ async def _handle_determine_eligibility(
     Returns:
         Eligibility determination result.
     """
-    return await determine_eligibility(
-        session,
-        uuid.UUID(params["participant_id"]),
-        params["trial_id"],
+    from src.db.trials import get_trial
+
+    participant_id = uuid.UUID(params["participant_id"])
+    trial_id = params["trial_id"]
+    result = await determine_eligibility(
+        session, participant_id, trial_id,
     )
+    if "error" in result:
+        event_type = "screening_error"
+    else:
+        event_type = "screening_completed"
+    trial = await get_trial(session, trial_id)
+    trial_name = trial.trial_name if trial else trial_id
+    payload = {**result, "trial_name": trial_name}
+    await _log_and_broadcast(
+        session, participant_id, event_type, payload,
+        trial_id=trial_id,
+    )
+    return result
 
 
 async def _handle_safety_check(
@@ -214,18 +289,25 @@ async def _handle_safety_check(
     Returns:
         Safety gate result as dict.
     """
+    participant_id = uuid.UUID(params["participant_id"])
     result = await run_safety_gate(
         params["response"],
         session,
-        uuid.UUID(params["participant_id"]),
+        participant_id,
         trial_id=params.get("trial_id"),
         context=params.get("context"),
     )
-    return {
+    result_dict = {
         "triggered": result.triggered,
         "trigger_type": result.trigger_type,
         "severity": result.severity,
     }
+    if result.triggered:
+        await _log_and_broadcast(
+            session, participant_id, "safety_triggered",
+            result_dict, trial_id=params.get("trial_id"),
+        )
+    return result_dict
 
 
 TOOL_HANDLERS = {
