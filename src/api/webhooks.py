@@ -296,6 +296,7 @@ async def _handle_safety_check(
         participant_id,
         trial_id=params.get("trial_id"),
         context=params.get("context"),
+        call_sid=params.get("call_sid"),
     )
     result_dict = {
         "triggered": result.triggered,
@@ -366,6 +367,43 @@ async def _get_or_create_conversation(
     return conversation
 
 
+async def _trigger_post_call_checks(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+    conversation_id: uuid.UUID,
+) -> None:
+    """Trigger supervisor audit and adversarial recheck after call.
+
+    Non-fatal: logs and continues if either check fails.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+        conversation_id: Conversation UUID.
+    """
+    try:
+        from src.agents.supervisor import audit_transcript
+
+        audit = await audit_transcript(session, conversation_id)
+        if not audit.get("compliant", True):
+            await _log_and_broadcast(
+                session, participant_id,
+                "compliance_gap_detected", audit,
+                trial_id=trial_id,
+            )
+    except Exception:
+        logger.debug("post_call_audit_failed")
+
+    try:
+        from src.agents.adversarial import schedule_recheck
+
+        await schedule_recheck(session, participant_id, trial_id)
+    except Exception:
+        logger.debug("adversarial_recheck_schedule_failed")
+
+
 # --- ElevenLabs Call Completion ---
 
 
@@ -390,10 +428,11 @@ async def handle_call_completion(
     payload: CallCompletionPayload,
     session: AsyncSession = Depends(get_async_session),
 ) -> dict:
-    """Handle call completion — upload audio to GCS.
+    """Handle call completion — upload audio, trigger post-call checks.
 
-    Uploads audio recording to GCS and stores the object path
-    in the conversations table.
+    Uploads audio recording to GCS, stores the object path in the
+    conversations table, then triggers supervisor audit and adversarial
+    recheck scheduling.
 
     Args:
         payload: Call completion payload.
@@ -431,6 +470,11 @@ async def handle_call_completion(
         payload.trial_id,
     )
     conversation.audio_gcs_path = result.gcs_path
+
+    await _trigger_post_call_checks(
+        session, participant_id, payload.trial_id,
+        conversation.conversation_id,
+    )
 
     logger.info(
         "call_audio_uploaded",

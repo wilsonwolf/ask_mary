@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents import Agent, function_tool
 from src.db.events import log_event
 from src.db.models import Appointment
-from src.db.postgres import create_appointment, get_participant_by_id
+from src.db.postgres import create_appointment, create_handoff, get_participant_by_id
 from src.db.trials import get_trial
+from src.services.cloud_tasks_client import enqueue_reminder
 
 CONFIRMATION_WINDOW_HOURS = 12
 SLOT_HOLD_MINUTES = 15
@@ -123,6 +124,9 @@ async def hold_slot(
     )
     appointment.status = "held"
     appointment.slot_held_until = expires_at
+    await _enqueue_slot_release(
+        participant_id, appointment.appointment_id, expires_at,
+    )
     return {
         "held": True,
         "appointment_id": str(appointment.appointment_id),
@@ -200,11 +204,61 @@ async def book_appointment(
         trial_id=trial_id,
         provenance="system",
     )
+    await _enqueue_confirmation_check(
+        participant_id, appointment.appointment_id, confirmation_due,
+    )
     return {
         "booked": True,
         "appointment_id": str(appointment.appointment_id),
         "confirmation_due_at": confirmation_due.isoformat(),
     }
+
+
+async def _enqueue_slot_release(
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    expires_at: datetime,
+) -> None:
+    """Enqueue a Cloud Tasks job to release a held slot.
+
+    Args:
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        expires_at: When the hold expires.
+    """
+    key = f"slot-release-{appointment_id}"
+    await enqueue_reminder(
+        participant_id=participant_id,
+        appointment_id=appointment_id,
+        template_id="slot_release",
+        channel="system",
+        send_at=expires_at,
+        idempotency_key=key,
+    )
+
+
+async def _enqueue_confirmation_check(
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    confirmation_due: datetime,
+) -> None:
+    """Enqueue a Cloud Tasks job to check confirmation at T-1h.
+
+    Args:
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        confirmation_due: Confirmation deadline datetime.
+    """
+    check_at = confirmation_due - timedelta(hours=1)
+    key = f"confirm-check-{appointment_id}"
+    await enqueue_reminder(
+        participant_id=participant_id,
+        appointment_id=appointment_id,
+        template_id="confirmation_check",
+        channel="system",
+        send_at=check_at,
+        idempotency_key=key,
+    )
 
 
 async def verify_teach_back(
@@ -246,13 +300,21 @@ async def verify_teach_back(
 
     if is_passed:
         appointment.teach_back_passed = True
-    result: dict = {
+    result_dict: dict = {
         "passed": is_passed,
         "attempts": appointment.teach_back_attempts,
     }
     if not is_passed and appointment.teach_back_attempts >= 2:
-        result["handoff_required"] = True
-    return result
+        result_dict["handoff_required"] = True
+        await create_handoff(
+            session,
+            participant_id=participant_id,
+            reason="teach_back_failed",
+            severity="CALLBACK_TICKET",
+            summary="Teach-back failed twice — participant may "
+            "not understand appointment details",
+        )
+    return result_dict
 
 
 async def release_expired_slot(

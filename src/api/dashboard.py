@@ -204,6 +204,53 @@ async def analytics_summary(
     }
 
 
+# --- Trial Config ---
+
+
+class UpdateTrialCoordinatorRequest(BaseModel):
+    """Request body for updating trial coordinator phone.
+
+    Attributes:
+        coordinator_phone: New coordinator phone number.
+    """
+
+    coordinator_phone: str
+
+
+@router.patch("/trials/{trial_id}/coordinator")
+async def update_trial_coordinator(
+    trial_id: str,
+    request: UpdateTrialCoordinatorRequest,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Update the coordinator phone for a trial.
+
+    Allows dashboard users to set or override the coordinator
+    phone number used for warm transfers.
+
+    Args:
+        trial_id: Trial identifier.
+        request: Coordinator phone update request.
+        session: Injected database session.
+
+    Returns:
+        Updated trial coordinator info.
+    """
+    result = await session.execute(
+        select(Trial).where(Trial.trial_id == trial_id)
+    )
+    trial = result.scalars().first()
+    if trial is None:
+        return {"error": "trial_not_found"}
+
+    trial.coordinator_phone = request.coordinator_phone
+    return {
+        "trial_id": trial_id,
+        "coordinator_phone": trial.coordinator_phone,
+        "updated": True,
+    }
+
+
 # --- Demo Trigger ---
 
 
@@ -469,6 +516,7 @@ def _serialize_handoff(handoff: HandoffQueue) -> dict:
         "severity": handoff.severity,
         "status": handoff.status,
         "summary": handoff.summary,
+        "coordinator_phone": handoff.coordinator_phone,
         "created_at": str(handoff.created_at),
     }
 

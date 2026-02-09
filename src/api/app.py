@@ -32,10 +32,12 @@ def create_app() -> FastAPI:
     from src.api.dashboard import router as dashboard_router
     from src.api.dashboard import ws_router
     from src.api.webhooks import router as webhooks_router
+    from src.api.worker_routes import router as worker_router
 
     app.include_router(webhooks_router)
     app.include_router(dashboard_router)
     app.include_router(ws_router)
+    app.include_router(worker_router)
 
     return app
 

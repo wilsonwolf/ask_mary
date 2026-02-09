@@ -1,7 +1,7 @@
 """Tests for the safety service — safety gate → handoff_queue wiring."""
 
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.services.safety_service import (
     build_safety_callback,
@@ -33,10 +33,27 @@ class TestBuildSafetyCallback:
             severity="HANDOFF_NOW",
         )
 
-        with patch(
-            "src.services.safety_service.create_handoff",
-            new_callable=AsyncMock,
-        ) as mock_create:
+        with (
+            patch(
+                "src.services.safety_service._get_coordinator_phone",
+                new_callable=AsyncMock,
+                return_value="+15551234567",
+            ),
+            patch(
+                "src.services.safety_service._build_handoff_packet",
+                new_callable=AsyncMock,
+                return_value={"identity_status": "verified"},
+            ),
+            patch(
+                "src.services.safety_service.create_handoff",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_create,
+            patch(
+                "src.services.safety_service._initiate_warm_transfer",
+                new_callable=AsyncMock,
+            ) as mock_transfer,
+        ):
             await callback(result)
             mock_create.assert_called_once_with(
                 mock_session,
@@ -46,7 +63,94 @@ class TestBuildSafetyCallback:
                 conversation_id=conversation_id,
                 trial_id=trial_id,
                 summary="Safety gate: severe_symptoms",
+                coordinator_phone="+15551234567",
             )
+
+    async def test_handoff_now_triggers_warm_transfer(self) -> None:
+        """HANDOFF_NOW with call_sid initiates warm transfer."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+        call_sid = "CA123"
+
+        callback = build_safety_callback(
+            mock_session,
+            participant_id,
+            trial_id="trial-1",
+            call_sid=call_sid,
+        )
+
+        result = SafetyResult(
+            triggered=True,
+            trigger_type="severe_symptoms",
+            severity="HANDOFF_NOW",
+        )
+
+        with (
+            patch(
+                "src.services.safety_service._get_coordinator_phone",
+                new_callable=AsyncMock,
+                return_value="+15551234567",
+            ),
+            patch(
+                "src.services.safety_service._build_handoff_packet",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "src.services.safety_service.create_handoff",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.services.safety_service._initiate_warm_transfer",
+                new_callable=AsyncMock,
+            ) as mock_transfer,
+        ):
+            await callback(result)
+            mock_transfer.assert_called_once_with(
+                call_sid, "+15551234567",
+            )
+
+    async def test_no_transfer_without_call_sid(self) -> None:
+        """No warm transfer when call_sid is missing."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+
+        callback = build_safety_callback(
+            mock_session,
+            participant_id,
+            trial_id="trial-1",
+        )
+
+        result = SafetyResult(
+            triggered=True,
+            trigger_type="severe_symptoms",
+            severity="HANDOFF_NOW",
+        )
+
+        with (
+            patch(
+                "src.services.safety_service._get_coordinator_phone",
+                new_callable=AsyncMock,
+                return_value="+15551234567",
+            ),
+            patch(
+                "src.services.safety_service._build_handoff_packet",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "src.services.safety_service.create_handoff",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ),
+            patch(
+                "src.services.safety_service._initiate_warm_transfer",
+                new_callable=AsyncMock,
+            ) as mock_transfer,
+        ):
+            await callback(result)
+            mock_transfer.assert_not_called()
 
 
 class TestRunSafetyGate:
@@ -57,10 +161,23 @@ class TestRunSafetyGate:
         mock_session = AsyncMock()
         participant_id = uuid.uuid4()
 
-        with patch(
-            "src.services.safety_service.create_handoff",
-            new_callable=AsyncMock,
-        ) as mock_create:
+        with (
+            patch(
+                "src.services.safety_service._get_coordinator_phone",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.services.safety_service._build_handoff_packet",
+                new_callable=AsyncMock,
+                return_value={},
+            ),
+            patch(
+                "src.services.safety_service.create_handoff",
+                new_callable=AsyncMock,
+                return_value=MagicMock(),
+            ) as mock_create,
+        ):
             result = await run_safety_gate(
                 "I have severe chest pain",
                 mock_session,

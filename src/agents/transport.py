@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
+from src.db.events import log_event
 from src.db.models import Appointment, Ride
 from src.db.postgres import create_ride, get_participant_by_id
 
@@ -85,6 +86,18 @@ async def book_transport(
         pickup_address=pickup_address,
         dropoff_address=appointment.site_address or "",
         scheduled_pickup_at=pickup_time,
+    )
+    await log_event(
+        session,
+        participant_id=participant_id,
+        event_type="transport_booked",
+        payload={
+            "ride_id": str(ride.ride_id),
+            "appointment_id": str(appointment_id),
+            "pickup_address": pickup_address,
+        },
+        provenance="system",
+        channel="system",
     )
     return {
         "booked": True,

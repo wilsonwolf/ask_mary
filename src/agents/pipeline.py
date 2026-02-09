@@ -30,9 +30,14 @@ def build_pipeline():
     Configures the orchestrator to hand off to all specialized agents.
     This must be called once at application startup.
 
-    Safety gate is wired via src/services/safety_service.run_safety_gate().
-    The API layer calls run_safety_gate() on every agent response before
-    delivering it to the participant.
+    Safety gate enforcement: ElevenLabs Conversational AI is configured
+    to call our safety_check server tool as a blocking pre-check on every
+    agent response. This is enforced by the ElevenLabs agent configuration
+    (not by our webhook code). The webhook handler at
+    /webhooks/elevenlabs/server-tool routes safety_check calls to
+    src/services/safety_service.run_safety_gate(), which evaluates the
+    response and writes to handoff_queue + initiates warm transfer if
+    severity is HANDOFF_NOW.
 
     Returns:
         The configured orchestrator agent ready to run.
