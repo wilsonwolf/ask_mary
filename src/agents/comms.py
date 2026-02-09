@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
 from src.db.events import log_event
+from src.services.cloud_tasks_client import enqueue_reminder
 from src.shared.comms import render_template
 
 CHANNEL_FALLBACK = {"voice": "sms", "sms": "whatsapp", "whatsapp": "sms"}
@@ -40,9 +41,7 @@ async def send_communication(
     Returns:
         Dict confirming the communication was sent.
     """
-    idem_key = idempotency_key or (
-        f"comms-{participant_id}-{template_id}-{channel}"
-    )
+    idem_key = idempotency_key or (f"comms-{participant_id}-{template_id}-{channel}")
     rendered = render_template(template_id, **variables)
     await log_event(
         session,
@@ -85,8 +84,14 @@ async def schedule_reminder(
     Returns:
         Dict confirming the reminder was scheduled.
     """
-    idem_key = (
-        f"reminder-{appointment_id}-{template_id}-{channel}"
+    idem_key = f"reminder-{appointment_id}-{template_id}-{channel}"
+    task_result = await enqueue_reminder(
+        participant_id=participant_id,
+        appointment_id=appointment_id,
+        template_id=template_id,
+        channel=channel,
+        send_at=send_at,
+        idempotency_key=idem_key,
     )
     await log_event(
         session,
@@ -97,6 +102,7 @@ async def schedule_reminder(
         payload={
             "template_id": template_id,
             "send_at": send_at.isoformat(),
+            "task_id": task_result.task_id,
         },
         provenance="system",
         idempotency_key=idem_key,
@@ -104,6 +110,7 @@ async def schedule_reminder(
     return {
         "scheduled": True,
         "send_at": send_at.isoformat(),
+        "task_id": task_result.task_id,
         "idempotency_key": idem_key,
     }
 

@@ -1,0 +1,28 @@
+scenario: caregiver_authorization
+description: "Caregiver calls on behalf of participant -> record caregiver info"
+participant:
+  first_name: Henry
+  last_name: Adams
+  dob: "1950-01-30"
+  zip: "02101"
+  distance_km: 18.0
+  phone: "+16175553333"
+trial_id: "diabetes-study-a"
+steps:
+  - action: verify_identity
+    module: src.agents.identity
+    params:
+      dob_year: 1950
+      zip_code: "02101"
+    expect:
+      verified: true
+  - action: record_caregiver_info
+    module: src.agents.screening
+    params:
+      caregiver_name: "Sarah Adams"
+      relationship: "daughter"
+      scope: "all"
+    expect:
+      recorded: true
+failure_criteria:
+  phi_shared_before_identity: false

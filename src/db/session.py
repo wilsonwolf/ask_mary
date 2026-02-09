@@ -49,11 +49,22 @@ def _get_session_factory():
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Yield an async database session.
+    """Yield an async database session with auto-commit.
+
+    Commits on successful completion, rolls back on exception.
 
     Yields:
-        AsyncSession that auto-closes on exit.
+        AsyncSession that commits on success.
     """
     factory = _get_session_factory()
     async with factory() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+
+# Alias for FastAPI Depends() compatibility
+get_async_session = get_session

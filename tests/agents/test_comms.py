@@ -53,7 +53,7 @@ class TestScheduleReminder:
     """Reminder scheduling."""
 
     async def test_schedules_reminder(self) -> None:
-        """Schedules a reminder for a future time."""
+        """Schedules a reminder via Cloud Tasks."""
         mock_session = AsyncMock()
         send_at = datetime(2026, 3, 14, 10, 0, tzinfo=UTC)
         with patch("src.agents.comms.log_event", return_value=MagicMock()):
@@ -67,6 +67,8 @@ class TestScheduleReminder:
             )
         assert result["scheduled"] is True
         assert "idempotency_key" in result
+        assert "task_id" in result
+        assert result["task_id"].startswith("task-")
 
 
 class TestHandleUnreachable:
@@ -77,7 +79,9 @@ class TestHandleUnreachable:
         mock_session = AsyncMock()
         with patch("src.agents.comms.log_event", return_value=MagicMock()):
             result = await handle_unreachable(
-                mock_session, uuid.uuid4(), "voice",
+                mock_session,
+                uuid.uuid4(),
+                "voice",
             )
         assert result["escalated"] is True
         assert result["fallback_channel"] == "sms"

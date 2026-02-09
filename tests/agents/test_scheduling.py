@@ -112,7 +112,10 @@ class TestHoldSlot:
             return_value=mock_appointment,
         ):
             result = await hold_slot(
-                mock_session, uuid.uuid4(), "trial-1", slot_time,
+                mock_session,
+                uuid.uuid4(),
+                "trial-1",
+                slot_time,
             )
         assert result["held"] is True
         assert "expires_at" in result
@@ -130,25 +133,83 @@ class TestHoldSlot:
         mock_session.execute.return_value = result_mock
 
         result = await hold_slot(
-            mock_session, uuid.uuid4(), "trial-1", slot_time,
+            mock_session,
+            uuid.uuid4(),
+            "trial-1",
+            slot_time,
+        )
+        assert result["held"] is False
+        assert result["reason"] == "slot_taken"
+
+    async def test_rejects_confirmed_slot(self) -> None:
+        """Returns held=False when slot is already confirmed."""
+        mock_session = AsyncMock()
+        slot_time = datetime.now(UTC) + timedelta(days=7)
+
+        # Confirmed appointment exists at this slot
+        existing = MagicMock()
+        existing.status = "confirmed"
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = existing
+        mock_session.execute.return_value = result_mock
+
+        result = await hold_slot(
+            mock_session,
+            uuid.uuid4(),
+            "trial-1",
+            slot_time,
         )
         assert result["held"] is False
         assert result["reason"] == "slot_taken"
 
 
 class TestBookAppointment:
-    """Appointment booking."""
+    """Appointment booking confirms held appointment."""
 
-    async def test_books_with_confirmation_window(self) -> None:
-        """Books appointment with 12-hour confirmation window."""
+    async def test_confirms_held_appointment(self) -> None:
+        """Books by confirming the existing held appointment."""
+        mock_session = AsyncMock()
+        slot_time = datetime.now(UTC) + timedelta(days=7)
+        held_appointment = MagicMock()
+        held_appointment.appointment_id = uuid.uuid4()
+        held_appointment.status = "held"
+
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = held_appointment
+        mock_session.execute.return_value = result_mock
+
+        with patch("src.agents.scheduling.log_event", return_value=MagicMock()):
+            result = await book_appointment(
+                mock_session,
+                uuid.uuid4(),
+                "trial-1",
+                slot_time,
+                "screening",
+            )
+        assert result["booked"] is True
+        assert "confirmation_due_at" in result
+        assert held_appointment.status == "booked"
+        assert held_appointment.visit_type == "screening"
+
+    async def test_creates_new_when_no_held(self) -> None:
+        """Creates new appointment when no held slot and no conflict."""
         mock_session = AsyncMock()
         slot_time = datetime.now(UTC) + timedelta(days=7)
         mock_appointment = MagicMock()
         mock_appointment.appointment_id = uuid.uuid4()
 
-        with patch(
-            "src.agents.scheduling.create_appointment",
-            return_value=mock_appointment,
+        # First call: no held appointment for this participant
+        # Second call: no conflict from other participants
+        no_result = MagicMock()
+        no_result.scalar_one_or_none.return_value = None
+        mock_session.execute.return_value = no_result
+
+        with (
+            patch(
+                "src.agents.scheduling.create_appointment",
+                return_value=mock_appointment,
+            ),
+            patch("src.agents.scheduling.log_event", return_value=MagicMock()),
         ):
             result = await book_appointment(
                 mock_session,
@@ -159,6 +220,29 @@ class TestBookAppointment:
             )
         assert result["booked"] is True
         assert "confirmation_due_at" in result
+
+    async def test_rejects_when_other_participant_holds_slot(self) -> None:
+        """Returns booked=False when another participant holds the slot."""
+        mock_session = AsyncMock()
+        slot_time = datetime.now(UTC) + timedelta(days=7)
+
+        # First call: no held appointment for this participant
+        no_held = MagicMock()
+        no_held.scalar_one_or_none.return_value = None
+        # Second call: conflict — another participant has this slot
+        has_conflict = MagicMock()
+        has_conflict.scalar_one_or_none.return_value = MagicMock()
+        mock_session.execute.side_effect = [no_held, has_conflict]
+
+        result = await book_appointment(
+            mock_session,
+            uuid.uuid4(),
+            "trial-1",
+            slot_time,
+            "screening",
+        )
+        assert result["booked"] is False
+        assert result["reason"] == "slot_taken"
 
 
 class TestVerifyTeachBack:

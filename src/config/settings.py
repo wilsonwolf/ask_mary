@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     elevenlabs_agent_id: str = ""
     elevenlabs_agent_phone_number_id: str = ""
 
+    # GCS Audio
+    gcs_audio_bucket: str = "ask-mary-audio"
+    gcs_signed_url_ttl_seconds: int = 3600
+
     # Databricks
     databricks_server_hostname: str = ""
     databricks_http_path: str = ""

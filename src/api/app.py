@@ -17,6 +17,10 @@ def create_app() -> FastAPI:
 
     app.include_router(_health_router())
 
+    from src.api.webhooks import router as webhooks_router
+
+    app.include_router(webhooks_router)
+
     return app
 
 
@@ -32,6 +36,11 @@ def _health_router() -> "fastapi.routing.APIRouter":
 
     @router.get("/health")
     async def health() -> dict[str, str]:
+        """Return application health status.
+
+        Returns:
+            Dict with status key.
+        """
         return {"status": "ok"}
 
     return router

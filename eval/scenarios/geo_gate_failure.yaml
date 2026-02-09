@@ -1,0 +1,20 @@
+scenario: geo_gate_failure
+description: "Participant distance exceeds trial max -> marked ineligible"
+participant:
+  first_name: Iris
+  last_name: West
+  dob: "1993-05-25"
+  zip: "85001"
+  distance_km: 250.0
+  phone: "+16025554444"
+trial_id: "cardio-trial-b"
+trial:
+  max_distance_km: 100.0
+steps:
+  - action: check_geo_eligibility
+    module: src.agents.scheduling
+    params: {}
+    expect:
+      eligible: false
+failure_criteria:
+  booked_despite_ineligible: false

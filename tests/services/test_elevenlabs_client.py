@@ -9,6 +9,7 @@ from src.services.elevenlabs_client import (
     ElevenLabsClient,
     build_conversation_config_override,
     build_dynamic_variables,
+    build_system_prompt,
 )
 
 
@@ -50,6 +51,42 @@ class TestBuildConversationConfigOverride:
         )
         assert result["agent"]["prompt"]["prompt"] == "You are Mary."
         assert result["agent"]["first_message"] == "Hello, this is Mary."
+
+
+class TestBuildSystemPrompt:
+    """Pure function: build_system_prompt."""
+
+    def test_includes_trial_criteria(self) -> None:
+        """System prompt contains inclusion/exclusion criteria."""
+        result = build_system_prompt(
+            trial_name="Diabetes Study A",
+            site_name="OHSU",
+            coordinator_phone="+15035551234",
+            inclusion_criteria={"age": "18-65", "diagnosis": "Type 2 Diabetes"},
+            exclusion_criteria={"pregnancy": "excluded"},
+            visit_templates={"screening": "60 min"},
+        )
+        assert "INCLUSION CRITERIA" in result
+        assert "age: 18-65" in result
+        assert "EXCLUSION CRITERIA" in result
+        assert "pregnancy: excluded" in result
+        assert "VISIT SCHEDULE" in result
+        assert "screening: 60 min" in result
+        assert "Diabetes Study A" in result
+        assert "+15035551234" in result
+
+    def test_handles_empty_criteria(self) -> None:
+        """System prompt handles empty criteria gracefully."""
+        result = build_system_prompt(
+            trial_name="Study B",
+            site_name="Site B",
+            coordinator_phone="+10000000000",
+            inclusion_criteria={},
+            exclusion_criteria={},
+            visit_templates={},
+        )
+        assert "None specified" in result
+        assert "No visit schedule defined" in result
 
 
 class TestCallResult:

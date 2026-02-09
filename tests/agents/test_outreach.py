@@ -68,7 +68,6 @@ class TestCheckDncBeforeContact:
             result = await check_dnc_before_contact(mock_session, uuid.uuid4(), "voice")
         assert result["blocked"] is True
 
-
     async def test_blocked_by_twilio_opt_out(self) -> None:
         """Returns blocked=True when Twilio opt-out is active."""
         mock_session = AsyncMock()
@@ -90,7 +89,9 @@ class TestCheckDncBeforeContact:
             mock_twilio_cls.return_value = mock_twilio
 
             result = await check_dnc_before_contact(
-                mock_session, uuid.uuid4(), "sms",
+                mock_session,
+                uuid.uuid4(),
+                "sms",
             )
         assert result["blocked"] is True
         assert result["reason"] == "twilio_opted_out"
@@ -157,19 +158,17 @@ class TestInitiateOutboundCall:
                 "src.agents.outreach.get_trial",
                 return_value=trial,
             ),
-            patch(
-                "src.agents.outreach.ElevenLabsClient"
-            ) as mock_el_cls,
+            patch("src.agents.outreach.ElevenLabsClient") as mock_el_cls,
             patch("src.agents.outreach.log_event"),
         ):
             mock_el = AsyncMock()
-            mock_el.initiate_outbound_call.return_value = (
-                mock_call_result
-            )
+            mock_el.initiate_outbound_call.return_value = mock_call_result
             mock_el_cls.return_value = mock_el
 
             result = await initiate_outbound_call(
-                mock_session, uuid.uuid4(), "trial-1",
+                mock_session,
+                uuid.uuid4(),
+                "trial-1",
             )
 
         assert result["initiated"] is True

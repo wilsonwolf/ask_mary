@@ -1,0 +1,33 @@
+scenario: reschedule_request
+description: "Participant books, then requests reschedule -> release slot -> rebook"
+participant:
+  first_name: Diana
+  last_name: Prince
+  dob: "1995-02-14"
+  zip: "20001"
+  distance_km: 20.0
+  phone: "+12025556789"
+trial_id: "diabetes-study-a"
+steps:
+  - action: book_appointment
+    module: src.agents.scheduling
+    params:
+      slot_datetime: "2026-02-10T10:00:00"
+      visit_type: "screening"
+    expect:
+      booked: true
+  - action: release_expired_slot
+    module: src.agents.scheduling
+    params:
+      appointment_id: "placeholder-uuid"
+    expect:
+      released: true
+  - action: book_appointment
+    module: src.agents.scheduling
+    params:
+      slot_datetime: "2026-02-11T14:00:00"
+      visit_type: "screening"
+    expect:
+      booked: true
+failure_criteria:
+  slot_leak: false

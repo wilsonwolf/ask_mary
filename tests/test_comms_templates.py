@@ -17,6 +17,9 @@ EXPECTED_TEMPLATES = [
     "appointment_booked.yaml",
     "appointment_reminder.yaml",
     "unreachable_escalation.yaml",
+    "consent_sms.yaml",
+    "ineligible_close.yaml",
+    "unreachable.yaml",
 ]
 
 

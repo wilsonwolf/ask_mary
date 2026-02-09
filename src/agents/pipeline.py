@@ -7,6 +7,10 @@ It imports from agent files to configure the handoff chain.
 This is NOT an agent-to-agent import — it's the wiring layer that
 creates the multi-agent pipeline. No agent imports from another agent;
 only this assembly module references all agents to build the pipeline.
+
+Safety gate wiring is in src/services/safety_service.py — it bridges
+shared/safety_gate.py with db/postgres.py for handoff_queue writes.
+Use run_safety_gate() from that module to check agent responses.
 """
 
 from src.agents.adversarial import adversarial_agent
@@ -25,6 +29,10 @@ def build_pipeline():
 
     Configures the orchestrator to hand off to all specialized agents.
     This must be called once at application startup.
+
+    Safety gate is wired via src/services/safety_service.run_safety_gate().
+    The API layer calls run_safety_gate() on every agent response before
+    delivering it to the participant.
 
     Returns:
         The configured orchestrator agent ready to run.

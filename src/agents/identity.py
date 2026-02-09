@@ -6,13 +6,14 @@ The 'agents' import is the external SDK, NOT src/agents/.
 
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
 from src.db.events import log_event
+from src.db.models import Participant
 from src.db.postgres import get_participant_by_id
-
 
 MAX_IDENTITY_ATTEMPTS = 2
 
@@ -81,6 +82,51 @@ async def verify_identity(
         "verified": False,
         "reason": "mismatch",
         "attempts": attempts,
+    }
+
+
+async def detect_duplicate(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+) -> dict:
+    """Check for duplicate participants matching DOB + ZIP + phone.
+
+    Looks for other participants with the same date_of_birth,
+    address_zip, and phone as the given participant.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID to check against.
+
+    Returns:
+        Dict with 'is_duplicate' bool and list of matching IDs.
+    """
+    participant = await get_participant_by_id(session, participant_id)
+    if participant is None:
+        return {"error": "participant_not_found"}
+
+    result = await session.execute(
+        select(Participant.participant_id).where(
+            Participant.date_of_birth == participant.date_of_birth,
+            Participant.address_zip == participant.address_zip,
+            Participant.phone == participant.phone,
+            Participant.participant_id != participant_id,
+        )
+    )
+    duplicates = [str(row[0]) for row in result.all()]
+
+    if duplicates:
+        await log_event(
+            session,
+            participant_id=participant_id,
+            event_type="duplicate_detected",
+            payload={"duplicate_ids": duplicates},
+            provenance="system",
+        )
+
+    return {
+        "is_duplicate": len(duplicates) > 0,
+        "duplicate_ids": duplicates,
     }
 
 

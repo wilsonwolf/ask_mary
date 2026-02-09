@@ -94,7 +94,11 @@ class ParticipantTrial(Base):
     participant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("participants.participant_id"), index=True
     )
-    trial_id: Mapped[str] = mapped_column(String(100), index=True)
+    trial_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("trials.trial_id"),
+        index=True,
+    )
     pipeline_status: Mapped[str] = mapped_column(String(20), default="new")
     enrollment_status: Mapped[str] = mapped_column(String(20), default="screening")
     eligibility_status: Mapped[str] = mapped_column(String(20), default="pending")
@@ -130,7 +134,10 @@ class Appointment(Base):
     participant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("participants.participant_id"), index=True
     )
-    trial_id: Mapped[str] = mapped_column(String(100))
+    trial_id: Mapped[str] = mapped_column(
+        String(100),
+        ForeignKey("trials.trial_id"),
+    )
     visit_type: Mapped[str] = mapped_column(String(20))
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     google_event_id: Mapped[str | None] = mapped_column(String(200), unique=True)
@@ -173,7 +180,10 @@ class Conversation(Base):
     participant_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("participants.participant_id"), index=True
     )
-    trial_id: Mapped[str | None] = mapped_column(String(100))
+    trial_id: Mapped[str | None] = mapped_column(
+        String(100),
+        ForeignKey("trials.trial_id"),
+    )
     channel: Mapped[str] = mapped_column(String(20))
     direction: Mapped[str] = mapped_column(String(20))
     agent_name: Mapped[str | None] = mapped_column(String(50))
@@ -211,7 +221,10 @@ class Event(Base):
         UUID(as_uuid=True), ForeignKey("appointments.appointment_id")
     )
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    trial_id: Mapped[str | None] = mapped_column(String(100))
+    trial_id: Mapped[str | None] = mapped_column(
+        String(100),
+        ForeignKey("trials.trial_id"),
+    )
     event_type: Mapped[str] = mapped_column(String(50), index=True)
     payload: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     provenance: Mapped[str | None] = mapped_column(String(20))
@@ -249,7 +262,10 @@ class HandoffQueue(Base):
         UUID(as_uuid=True), ForeignKey("participants.participant_id"), index=True
     )
     conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
-    trial_id: Mapped[str | None] = mapped_column(String(100))
+    trial_id: Mapped[str | None] = mapped_column(
+        String(100),
+        ForeignKey("trials.trial_id"),
+    )
     reason: Mapped[str] = mapped_column(String(50))
     severity: Mapped[str] = mapped_column(String(20))
     priority: Mapped[str] = mapped_column(String(10), default="medium")
@@ -314,9 +330,7 @@ class Trial(Base):
 
     __tablename__ = "trials"
 
-    trial_id: Mapped[str] = mapped_column(
-        String(100), primary_key=True
-    )
+    trial_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     trial_name: Mapped[str] = mapped_column(String(200))
     inclusion_criteria: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     exclusion_criteria: Mapped[dict | None] = mapped_column(JSONB, default=dict)

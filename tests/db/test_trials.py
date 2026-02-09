@@ -1,6 +1,5 @@
 """Tests for the Trial model and TrialRepository CRUD operations."""
 
-import uuid
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

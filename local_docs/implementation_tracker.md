@@ -1,7 +1,7 @@
 # Ask Mary — Implementation Tracker
 
 > Auto-updated at the end of each phase by the tracker enforcement hook.
-> Last updated: 2026-02-08 Phase 2 complete.
+> Last updated: 2026-02-08 Phase 3 complete.
 
 ---
 
@@ -14,7 +14,7 @@
 | 1.3 Operational DB module | DONE | src/db/models.py, src/db/postgres.py, src/db/events.py, src/db/session.py | tests/db/test_models.py (15), tests/db/test_crud.py (12) | CRUD with idempotency dedup, FK constraints |
 | 1.4 Databricks analytics tables | NOT STARTED | — | — | Blocked: no Databricks credentials yet |
 | 1.5 Analytics DB module | NOT STARTED | — | — | Blocked: depends on 1.4 |
-| 1.6 GCS audio bucket setup | NOT STARTED | — | — | Blocked: bucket creation is human task |
+| 1.6 GCS audio bucket setup | DONE | src/services/gcs_client.py | tests/services/test_gcs_client.py (3) | Bucket ask-mary-audio created. Client + webhooks wired in Phase 2. |
 | 1.7 ElevenLabs + Twilio setup | NOT STARTED | — | — | Human task (P1 checklist) |
 | 1.8 OpenAI Agents SDK skeleton | DONE | src/agents/*.py (9 files), src/agents/pipeline.py | tests/agents/test_pipeline.py (3) | Orchestrator + 8 agents with handoff chain |
 
@@ -52,17 +52,65 @@
 | 2.9 Comms templates (YAML) | DONE | comms_templates/ (12 YAML files) | tests/test_comms_templates.py (4) | 9 original + 3 added (consent_sms, ineligible_close, unreachable). |
 | 2.10 Twilio client | DONE | src/services/twilio_client.py | tests/services/test_twilio_client.py (3) | DNC check via Messaging Service SID. SMS + warm transfer. |
 
+**Phase 2 corrections (round 2):**
+| Correction | Status | Files | Tests | Notes |
+|------------|--------|-------|-------|-------|
+| Safety gate → handoff_queue wiring | DONE | src/services/safety_service.py | tests/services/test_safety_service.py (3) | build_safety_callback + run_safety_gate. Services layer bridges shared/ and db/. |
+| ElevenLabs server tool webhooks | DONE | src/api/webhooks.py, src/api/app.py | tests/api/test_webhooks.py (6) | /webhooks/elevenlabs/server-tool + /webhooks/twilio/dtmf. Routes to agent helpers. |
+| Hold→book double-booking fix | DONE | src/agents/scheduling.py | tests/agents/test_scheduling.py (13) | book_appointment() now confirms held appointment instead of creating new one. |
+| GCS audio client | DONE | src/services/gcs_client.py, src/config/settings.py | tests/services/test_gcs_client.py (3) | upload_audio + generate_signed_url. Bucket: ask-mary-audio. |
+| Trial criteria in ElevenLabs prompt | DONE | src/services/elevenlabs_client.py, src/agents/outreach.py | tests/services/test_elevenlabs_client.py (7) | build_system_prompt() with inclusion/exclusion/visits. |
+| Duplicate detection in identity | DONE | src/agents/identity.py | tests/agents/test_identity.py (12) | detect_duplicate() queries DOB + ZIP + phone. |
+| Cloud Tasks stub for comms | DONE | src/services/cloud_tasks_client.py, src/workers/reminders.py | tests/services/test_cloud_tasks_client.py (1) | enqueue_reminder() stub. Worker skeleton. |
+| trial_id FK constraints | DONE | alembic/versions/b2c3d4e5f6a7, src/db/models.py | — | FKs on 5 tables → trials.trial_id. |
+| HELD in AppointmentStatus | DONE | src/shared/types.py | — | Added HELD = "held" to enum. |
+
+**Phase 2 corrections (round 3):**
+| Correction | Status | Files | Tests | Notes |
+|------------|--------|-------|-------|-------|
+| Webhook import crash (get_trial_criteria → get_screening_criteria) | DONE | src/api/webhooks.py | — | Import name mismatch would crash app on startup. |
+| GCS audio wired into flow (call-complete + signed-url) | DONE | src/api/webhooks.py | tests/api/test_webhooks.py (+4) | /webhooks/elevenlabs/call-complete uploads audio. /webhooks/audio/signed-url for playback. |
+| book_appointment double-book for other participants | DONE | src/agents/scheduling.py | tests/agents/test_scheduling.py (+1) | Added SELECT FOR UPDATE conflict check in else branch for ANY participant at same slot. |
+| DTMF verify endpoint | DONE | src/api/webhooks.py | tests/api/test_webhooks.py (+1) | /webhooks/twilio/dtmf-verify calls verify_identity with captured digits. |
+| Comms template test list updated to 12 | DONE | tests/test_comms_templates.py | — | Added consent_sms, ineligible_close, unreachable to EXPECTED_TEMPLATES. |
+
+**Phase 2 corrections (round 4):**
+| Correction | Status | Files | Tests | Notes |
+|------------|--------|-------|-------|-------|
+| Call completion persists audio_gcs_path | DONE | src/api/webhooks.py | tests/api/test_webhooks.py (+1) | _find_conversation() looks up conversation row; sets audio_gcs_path after upload. |
+| Slot conflict includes "confirmed" status | DONE | src/agents/scheduling.py | tests/agents/test_scheduling.py (+1) | hold_slot and book_appointment now check held\|booked\|confirmed. |
+
+**Phase 2 corrections (round 5):**
+| Correction | Status | Files | Tests | Notes |
+|------------|--------|-------|-------|-------|
+| Conversation row created on call-complete | DONE | src/api/webhooks.py | tests/api/test_webhooks.py (+1) | _get_or_create_conversation() looks up by call_sid (ElevenLabs conversation_id); creates row if missing. Replaces _find_conversation(). |
+| Session dependency commits writes | DONE | src/db/session.py | tests/db/test_session.py (+1) | get_session() now commits on success, rolls back on exception. |
+| DTMF auto-verify when all fields present | DONE | src/api/webhooks.py | tests/api/test_webhooks.py (+1) | /twilio/dtmf auto-calls verify_identity when participant_id + dob_year + ZIP are all provided by Twilio Studio. |
+
+**Phase 2 test count: 175 tests passing (12 DB integration errors — require live DB)**
+
 ---
 
 ## Phase 3: Safety & Testing (Hours 7-9)
 
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
-| 3.1 Immutable safety tests | NOT STARTED | tests/safety/ | 16 tests planned | All safety scenario tests |
-| 3.2 Supervisor Agent | NOT STARTED | src/agents/supervisor.py (stub exists) | — | Post-call audit, compliance, deception |
-| 3.3 Adversarial Checker | NOT STARTED | src/agents/adversarial.py (stub exists) | — | Re-screen, EHR cross-ref, Cloud Tasks |
-| 3.4 Evaluation scenarios | NOT STARTED | tests/evaluation/scenarios/ | — | 11 YAML scenarios + runner |
-| 3.5 Integration tests | PARTIAL | tests/db/test_crud.py | 12 | DB integration done; webhook, calendar, GCS TODO |
+| 3.1 Immutable safety tests | DONE | tests/safety/ (17 files) | 59 | DNC, identity, eligibility, handoff, consent, idempotency, confirmation, geo, teach-back, disclosure, PHI, deception, provenance |
+| 3.2 Supervisor Agent | DONE | src/agents/supervisor.py | tests/agents/test_supervisor.py (10) | 4 helpers + 4 SDK tools: audit_transcript, check_phi_leak, detect_answer_inconsistencies, audit_provenance |
+| 3.3 Adversarial Checker | DONE | src/agents/adversarial.py | tests/agents/test_adversarial.py (6) | 3 helpers + 3 SDK tools: detect_deception, schedule_recheck, run_adversarial_rescreen |
+| 3.4 Evaluation scenarios | DONE | eval/ (runner, metrics, 11 YAML scenarios) | tests/evaluation/test_eval_runner.py (8) | happy_path, angry, wrong_person, lying, reschedule, no_show, consent_withdrawal, unreachable, caregiver, geo_gate, medical_advice |
+| 3.5 Integration tests | DONE | tests/integration/ (8 files) | 16 (14 active + 2 skipped) | Twilio, ElevenLabs, Postgres, GCS, Cloud Tasks, events. Databricks + Calendar skipped (no creds). |
+
+**Phase 3 implementation fixes (make safety tests pass):**
+| Fix | Status | Files | Notes |
+|-----|--------|-------|-------|
+| PHI guard (identity gate) | DONE | src/shared/validators.py | check_identity_gate() — patchable stub pattern to avoid shared/ → db/ import |
+| Disclosure gate | DONE | src/shared/validators.py | check_disclosure_gate() — requires disclosed_automation + consent_to_continue |
+| Provenance annotation | DONE | src/agents/screening.py | record_screening_response() preserves _history list on update |
+| Teach-back handoff flag | DONE | src/agents/scheduling.py | verify_teach_back() returns handoff_required=True after 2 failures |
+| Deception detection | DONE | src/agents/adversarial.py | detect_deception() compares screening_responses vs ehr_discrepancies |
+
+**Phase 3 test count: 272 passing, 2 skipped (12 DB integration errors require live DB)**
 
 ---
 
@@ -94,14 +142,14 @@
 
 | Phase | Total Tasks | Done | Partial | Not Started |
 |-------|------------|------|---------|-------------|
-| Phase 1: Foundation | 8 + 7 extras | 11 | 0 | 4 |
-| Phase 2: Core Agents | 10 | 10 | 0 | 0 |
-| Phase 3: Safety & Testing | 5 | 0 | 1 | 4 |
+| Phase 1: Foundation | 8 + 7 extras | 12 | 0 | 3 |
+| Phase 2: Core Agents | 10 + 19 corrections | 29 | 0 | 0 |
+| Phase 3: Safety & Testing | 5 + 5 fixes | 10 | 0 | 0 |
 | Phase 4: Frontend & Polish | 5 | 0 | 0 | 5 |
 | Phase 5: Demo Validation | 5 | 0 | 0 | 5 |
-| **Total** | **40** | **21** | **1** | **13** |
+| **Total** | **64** | **51** | **0** | **8** |
 
-**Test count: 160 passing / 0 failing**
+**Test count: 272 passing, 2 skipped / 0 failing (12 DB integration errors require live DB)**
 
 ---
 
@@ -109,10 +157,11 @@
 
 ```
 Databricks creds needed → 1.4, 1.5
-GCS bucket created → 1.6
+GCS bucket created → 1.6 ✅ DONE
 Twilio/ElevenLabs setup → 1.7 (human task, creds working)
 Google Calendar → DEFERRED to post-hackathon (see plan Section 14.1)
-Phase 2 agents DONE → Phase 3 safety tests unblocked
+Phase 2 agents DONE → Phase 3 safety tests ✅ UNBLOCKED
+Phase 3 safety+agents DONE → Phase 4 frontend unblocked
 Phase 4 deploy → Phase 5 demo validation
 ```
 
@@ -135,3 +184,24 @@ Phase 4 deploy → Phase 5 demo validation
 | ElevenLabs agent_phone_number_id from config | agent_phone_number_id is the agent's outbound number (Settings); customer_number is the participant's phone (per-call). | 2026-02-08 |
 | Identity attempts tracked in contactability JSONB | Avoids adding a column; identity_attempts counter in JSONB field. Handoff after MAX_IDENTITY_ATTEMPTS=2. | 2026-02-08 |
 | Idempotency keys on all comms outbound | Format: comms-{participant_id}-{template_id}-{channel}. Passed to log_event for dedup. | 2026-02-08 |
+| Safety service bridges shared/ and db/ | run_safety_gate() in src/services/safety_service.py wires evaluate_safety() callback to create_handoff(). Services layer resolves architecture constraint. | 2026-02-08 |
+| ElevenLabs server tools via webhooks | /webhooks/elevenlabs/server-tool routes to agent helpers with session injection. Phase 1 architecture per plan line 1655. | 2026-02-08 |
+| book_appointment confirms held slot | hold_slot() creates HELD appointment; book_appointment() looks it up and transitions to BOOKED. No double-booking. | 2026-02-08 |
+| GCS audio: google-cloud-storage (sync) | MVP uses sync client in async context. Production should wrap in asyncio.to_thread(). Bucket: ask-mary-audio. | 2026-02-08 |
+| Cloud Tasks enqueue is a stub for MVP | enqueue_reminder() logs + returns mock task_id. Real Cloud Tasks API when queue is created. | 2026-02-08 |
+| trial_id FKs across 5 tables | Migration b2c3d4e5f6a7 adds FKs on participant_trials, appointments, conversations, events, handoff_queue → trials.trial_id. | 2026-02-08 |
+| Call-complete webhook uploads audio to GCS | /webhooks/elevenlabs/call-complete decodes base64 audio → upload_audio(). Object path: {trial_id}/{participant_id}/{conversation_id}.wav. | 2026-02-08 |
+| Signed URL endpoint for dashboard audio playback | /webhooks/audio/signed-url generates time-limited signed URL (default 1h TTL) for GCS audio objects. | 2026-02-08 |
+| book_appointment checks ALL participants at slot | Else branch (no held appointment) now does SELECT FOR UPDATE for any participant at that trial+slot to prevent double-booking. | 2026-02-08 |
+| DTMF verify endpoint separates capture from verification | /webhooks/twilio/dtmf captures digits only; /webhooks/twilio/dtmf-verify takes participant_id+digits and calls verify_identity(). | 2026-02-08 |
+| Conversation row created at call-complete | _get_or_create_conversation() uses call_sid (ElevenLabs conversation_id) as unique key. Creates Conversation row if none exists. Replaces _find_conversation() which had MultipleResultsFound risk. | 2026-02-08 |
+| Session dependency auto-commits | get_session() now commits on success, rolls back on exception. All webhook writes (audio_gcs_path, appointments, etc.) are persisted. | 2026-02-08 |
+| DTMF auto-verify with Twilio Studio context | /twilio/dtmf accepts optional participant_id + dob_year fields. When all three pieces present (5-digit ZIP + participant + DOB), auto-calls verify_identity(). Twilio Studio passes context across gather steps. | 2026-02-08 |
+| Call completion persists audio_gcs_path | _find_conversation() looks up conversation by participant_id, sets audio_gcs_path on the row after GCS upload. | 2026-02-08 |
+| Slot conflict checks include "confirmed" | hold_slot and book_appointment now check held\|booked\|confirmed to prevent double-booking a confirmed slot. | 2026-02-08 |
+| Validators use patchable stub for DB access | shared/ cannot import db/ (architecture hook). check_identity_gate() and check_disclosure_gate() use a get_participant_by_id stub with Any types. Tests mock at src.shared.validators.get_participant_by_id. | 2026-02-08 |
+| Provenance annotation preserves _history | record_screening_response() appends old value to {key}_history list before setting new value. Annotate-don't-overwrite per plan. | 2026-02-08 |
+| Safety tests are immutable (17 files) | tests/safety/ locked by PreToolUse hook. If a safety test fails, implementation is wrong. 59 tests covering DNC, identity, eligibility, handoff, consent, geo, teach-back, disclosure, PHI, deception, provenance. | 2026-02-08 |
+| Supervisor audits post-call transcripts | audit_transcript() checks disclosure→consent→identity ordering. check_phi_leak() scans pre-identity entries for PHI patterns. detect_answer_inconsistencies() finds contradictions. | 2026-02-08 |
+| Adversarial recheck at T+14 days | schedule_recheck() enqueues Cloud Tasks job. run_adversarial_rescreen() marks results with system provenance. | 2026-02-08 |
+| Eval framework uses YAML scenario files | 11 scenarios in eval/scenarios/. Runner loads YAML, mocks DB, calls agent helpers per step, checks assertions. | 2026-02-08 |

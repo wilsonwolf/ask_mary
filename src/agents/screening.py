@@ -93,6 +93,11 @@ async def record_screening_response(
         return {"error": "enrollment_not_found"}
 
     responses = pt.screening_responses or {}
+    history_key = f"{question_key}_history"
+    if question_key in responses:
+        history = responses.get(history_key, [])
+        history.append(responses[question_key])
+        responses[history_key] = history
     responses[question_key] = {
         "answer": answer,
         "provenance": provenance,

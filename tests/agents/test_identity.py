@@ -8,6 +8,7 @@ from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.identity import (
+    detect_duplicate,
     identity_agent,
     mark_wrong_person,
     update_identity_status,
@@ -90,7 +91,10 @@ class TestVerifyIdentity:
             return_value=participant,
         ):
             result = await verify_identity(
-                mock_session, uuid.uuid4(), 1990, "97201",
+                mock_session,
+                uuid.uuid4(),
+                1990,
+                "97201",
             )
         assert result["verified"] is False
         assert result["handoff_required"] is True
@@ -104,7 +108,10 @@ class TestVerifyIdentity:
             return_value=None,
         ):
             result = await verify_identity(
-                mock_session, uuid.uuid4(), 1985, "97201",
+                mock_session,
+                uuid.uuid4(),
+                1985,
+                "97201",
             )
         assert result["error"] == "participant_not_found"
 
@@ -121,11 +128,63 @@ class TestVerifyIdentity:
             return_value=participant,
         ):
             result = await verify_identity(
-                mock_session, uuid.uuid4(), 1990, "97201",
+                mock_session,
+                uuid.uuid4(),
+                1990,
+                "97201",
             )
         assert result["attempts"] == 1
         assert result["verified"] is False
         assert "handoff_required" not in result
+
+
+class TestDetectDuplicate:
+    """Duplicate participant detection."""
+
+    async def test_detects_duplicate(self) -> None:
+        """Finds another participant with same DOB + ZIP + phone."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+        dup_id = uuid.uuid4()
+        participant = MagicMock()
+        participant.date_of_birth = date(1985, 6, 15)
+        participant.address_zip = "97201"
+        participant.phone = "+15035551234"
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = [(dup_id,)]
+        mock_session.execute.return_value = result_mock
+
+        with (
+            patch(
+                "src.agents.identity.get_participant_by_id",
+                return_value=participant,
+            ),
+            patch("src.agents.identity.log_event", return_value=MagicMock()),
+        ):
+            result = await detect_duplicate(mock_session, participant_id)
+        assert result["is_duplicate"] is True
+        assert str(dup_id) in result["duplicate_ids"]
+
+    async def test_no_duplicate(self) -> None:
+        """Returns not duplicate when no matches found."""
+        mock_session = AsyncMock()
+        participant = MagicMock()
+        participant.date_of_birth = date(1985, 6, 15)
+        participant.address_zip = "97201"
+        participant.phone = "+15035551234"
+
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        mock_session.execute.return_value = result_mock
+
+        with patch(
+            "src.agents.identity.get_participant_by_id",
+            return_value=participant,
+        ):
+            result = await detect_duplicate(mock_session, uuid.uuid4())
+        assert result["is_duplicate"] is False
+        assert result["duplicate_ids"] == []
 
 
 class TestMarkWrongPerson:

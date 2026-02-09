@@ -104,7 +104,7 @@ async def hold_slot(
         .where(
             Appointment.trial_id == trial_id,
             Appointment.scheduled_at == slot_datetime,
-            Appointment.status.in_(["held", "booked"]),
+            Appointment.status.in_(["held", "booked", "confirmed"]),
         )
         .with_for_update()
     )
@@ -140,6 +140,9 @@ async def book_appointment(
 ) -> dict:
     """Book an appointment with a 12-hour confirmation window.
 
+    If a held appointment exists for this participant+trial+slot,
+    confirms it. Otherwise creates a new appointment.
+
     Args:
         session: Active database session.
         participant_id: Participant UUID.
@@ -154,13 +157,40 @@ async def book_appointment(
     confirmation_due = booked_at + timedelta(
         hours=CONFIRMATION_WINDOW_HOURS,
     )
-    appointment = await create_appointment(
-        session,
-        participant_id=participant_id,
-        trial_id=trial_id,
-        visit_type=visit_type,
-        scheduled_at=slot_datetime,
+
+    result = await session.execute(
+        select(Appointment).where(
+            Appointment.participant_id == participant_id,
+            Appointment.trial_id == trial_id,
+            Appointment.scheduled_at == slot_datetime,
+            Appointment.status == "held",
+        )
     )
+    appointment = result.scalar_one_or_none()
+
+    if appointment:
+        appointment.status = "booked"
+        appointment.visit_type = visit_type
+    else:
+        conflict = await session.execute(
+            select(Appointment)
+            .where(
+                Appointment.trial_id == trial_id,
+                Appointment.scheduled_at == slot_datetime,
+                Appointment.status.in_(["held", "booked", "confirmed"]),
+            )
+            .with_for_update()
+        )
+        if conflict.scalar_one_or_none() is not None:
+            return {"booked": False, "reason": "slot_taken"}
+        appointment = await create_appointment(
+            session,
+            participant_id=participant_id,
+            trial_id=trial_id,
+            visit_type=visit_type,
+            scheduled_at=slot_datetime,
+        )
+
     appointment.confirmation_due_at = confirmation_due
     await log_event(
         session,
@@ -216,10 +246,13 @@ async def verify_teach_back(
 
     if is_passed:
         appointment.teach_back_passed = True
-    return {
+    result: dict = {
         "passed": is_passed,
         "attempts": appointment.teach_back_attempts,
     }
+    if not is_passed and appointment.teach_back_attempts >= 2:
+        result["handoff_required"] = True
+    return result
 
 
 async def release_expired_slot(

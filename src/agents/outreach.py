@@ -24,6 +24,7 @@ from src.services.elevenlabs_client import (
     ElevenLabsClient,
     build_conversation_config_override,
     build_dynamic_variables,
+    build_system_prompt,
 )
 from src.services.twilio_client import TwilioClient
 from src.shared.validators import is_dnc_blocked
@@ -58,9 +59,7 @@ async def check_dnc_before_contact(
             account_sid=settings.twilio_account_sid,
             auth_token=settings.twilio_auth_token,
             from_number=settings.twilio_phone_number,
-            messaging_service_sid=(
-                settings.twilio_messaging_service_sid
-            ),
+            messaging_service_sid=(settings.twilio_messaging_service_sid),
         )
         if twilio.check_dnc_status(participant.phone):
             return {"blocked": True, "reason": "twilio_opted_out"}
@@ -85,9 +84,7 @@ async def assemble_call_context(
     participant = await get_participant_by_id(session, participant_id)
     trial = await get_trial(session, trial_id)
     return {
-        "participant_name": (
-            f"{participant.first_name} {participant.last_name}"
-        ),
+        "participant_name": (f"{participant.first_name} {participant.last_name}"),
         "participant_phone": participant.phone,
         "trial_name": trial.trial_name,
         "site_name": trial.site_name,
@@ -114,15 +111,15 @@ async def initiate_outbound_call(
         Dict with call initiation status and conversation_id.
     """
     context = await assemble_call_context(
-        session, participant_id, trial_id,
+        session,
+        participant_id,
+        trial_id,
     )
     settings = get_settings()
     el_client = ElevenLabsClient(
         api_key=settings.elevenlabs_api_key,
         agent_id=settings.elevenlabs_agent_id,
-        agent_phone_number_id=(
-            settings.elevenlabs_agent_phone_number_id
-        ),
+        agent_phone_number_id=(settings.elevenlabs_agent_phone_number_id),
     )
     dynamic_vars = build_dynamic_variables(
         participant_name=context["participant_name"],
@@ -130,12 +127,19 @@ async def initiate_outbound_call(
         site_name=context["site_name"],
         coordinator_phone=context["coordinator_phone"],
     )
+    system_prompt = build_system_prompt(
+        trial_name=context["trial_name"],
+        site_name=context["site_name"],
+        coordinator_phone=context["coordinator_phone"],
+        inclusion_criteria=context["inclusion_criteria"],
+        exclusion_criteria=context["exclusion_criteria"],
+        visit_templates=context["visit_templates"],
+    )
     config_override = build_conversation_config_override(
-        system_prompt=(
-            f"You are Mary, calling about {context['trial_name']}."
-        ),
+        system_prompt=system_prompt,
         first_message=(
-            f"Hello {context['participant_name']}, this is Mary."
+            f"Hello {context['participant_name']}, this is Mary "
+            f"calling about the {context['trial_name']} study."
         ),
     )
     call_result = await el_client.initiate_outbound_call(
@@ -330,10 +334,7 @@ async def tool_capture_consent(
     Returns:
         JSON string with consent capture status.
     """
-    return (
-        f'{{"participant_id": "{participant_id}",'
-        f' "consent": {consent_to_continue}}}'
-    )
+    return f'{{"participant_id": "{participant_id}", "consent": {consent_to_continue}}}'
 
 
 @function_tool
@@ -354,10 +355,7 @@ async def tool_log_attempt(
     Returns:
         JSON string confirming event was logged.
     """
-    return (
-        f'{{"logged": true,'
-        f' "participant_id": "{participant_id}"}}'
-    )
+    return f'{{"logged": true, "participant_id": "{participant_id}"}}'
 
 
 @function_tool
@@ -374,11 +372,7 @@ async def tool_handle_stop(
     Returns:
         JSON string confirming DNC was applied.
     """
-    return (
-        f'{{"dnc_applied": true,'
-        f' "participant_id": "{participant_id}",'
-        f' "channel": "{channel}"}}'
-    )
+    return f'{{"dnc_applied": true, "participant_id": "{participant_id}", "channel": "{channel}"}}'
 
 
 outreach_agent = Agent(

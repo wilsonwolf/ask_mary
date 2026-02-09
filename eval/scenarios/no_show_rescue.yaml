@@ -1,0 +1,18 @@
+scenario: no_show_rescue
+description: "Placeholder -- participant no-shows, system initiates rescue workflow"
+participant:
+  first_name: Eve
+  last_name: Torres
+  dob: "1980-09-10"
+  zip: "30301"
+  distance_km: 25.0
+  phone: "+14045553456"
+trial_id: "cardio-trial-b"
+steps:
+  - action: placeholder
+    module: src.agents.scheduling
+    params: {}
+    expect:
+      placeholder: true
+failure_criteria:
+  not_implemented: true

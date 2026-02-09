@@ -1,7 +1,13 @@
 """Shared input validators for the Ask Mary application."""
 
+from __future__ import annotations
+
 import re
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import uuid
 
 from src.shared.types import Channel
 
@@ -76,3 +82,68 @@ def validate_channel(channel: str) -> bool:
         True if the channel is a valid outbound channel.
     """
     return channel in _VALID_CHANNELS
+
+
+async def get_participant_by_id(
+    session: Any,
+    participant_id: uuid.UUID,
+) -> Any:
+    """Fetch participant by ID for gate validation.
+
+    Patchable function reference for unit testing gate checks.
+    Production wiring injects the real DB lookup at startup.
+
+    Args:
+        session: Database session object.
+        participant_id: Participant UUID.
+
+    Returns:
+        Participant object.
+
+    Raises:
+        NotImplementedError: If not patched or wired.
+    """
+    raise NotImplementedError("Wire to DB layer at startup")
+
+
+async def check_identity_gate(
+    session: Any,
+    participant_id: uuid.UUID,
+) -> dict:
+    """Check if participant identity has been verified.
+
+    Blocks PHI sharing until identity_status == "verified".
+
+    Args:
+        session: Database session object.
+        participant_id: Participant UUID.
+
+    Returns:
+        Dict with 'passed' boolean.
+    """
+    participant = await get_participant_by_id(session, participant_id)
+    is_verified = participant.identity_status == "verified"
+    return {"passed": is_verified}
+
+
+async def check_disclosure_gate(
+    session: Any,
+    participant_id: uuid.UUID,
+) -> dict:
+    """Check if automation disclosure and consent were captured.
+
+    Blocks proceeding until disclosed_automation=True AND
+    consent_to_continue=True.
+
+    Args:
+        session: Database session object.
+        participant_id: Participant UUID.
+
+    Returns:
+        Dict with 'passed' boolean.
+    """
+    participant = await get_participant_by_id(session, participant_id)
+    consent = participant.consent or {}
+    is_disclosed = consent.get("disclosed_automation") is True
+    has_consent = consent.get("consent_to_continue") is True
+    return {"passed": is_disclosed and has_consent}

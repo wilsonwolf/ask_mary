@@ -49,6 +49,79 @@ def build_dynamic_variables(
     }
 
 
+def build_system_prompt(
+    *,
+    trial_name: str,
+    site_name: str,
+    coordinator_phone: str,
+    inclusion_criteria: dict,
+    exclusion_criteria: dict,
+    visit_templates: dict,
+) -> str:
+    """Build the per-call system prompt with trial criteria.
+
+    Args:
+        trial_name: Trial display name.
+        site_name: Site display name.
+        coordinator_phone: Coordinator phone number.
+        inclusion_criteria: Trial inclusion criteria.
+        exclusion_criteria: Trial exclusion criteria.
+        visit_templates: Trial visit templates.
+
+    Returns:
+        System prompt string for ElevenLabs conversation.
+    """
+    inclusion_text = _format_criteria(inclusion_criteria)
+    exclusion_text = _format_criteria(exclusion_criteria)
+    visits_text = _format_visits(visit_templates)
+
+    return (
+        f"You are Mary, an AI assistant calling about the "
+        f"{trial_name} study at {site_name}.\n\n"
+        f"INCLUSION CRITERIA:\n{inclusion_text}\n\n"
+        f"EXCLUSION CRITERIA:\n{exclusion_text}\n\n"
+        f"VISIT SCHEDULE:\n{visits_text}\n\n"
+        f"RULES:\n"
+        f"- You MUST disclose that you are an automated assistant "
+        f"and that the call may be recorded.\n"
+        f"- You MUST get explicit consent to continue.\n"
+        f"- You MUST verify identity (DOB year + ZIP) before "
+        f"sharing any trial details.\n"
+        f"- NEVER give medical advice.\n"
+        f"- If the participant reports symptoms or distress, "
+        f"transfer to coordinator at {coordinator_phone}.\n"
+        f"- If the participant says STOP, end the call immediately."
+    )
+
+
+def _format_criteria(criteria: dict) -> str:
+    """Format criteria dict as bullet list.
+
+    Args:
+        criteria: Criteria key-value pairs.
+
+    Returns:
+        Formatted string with bullet points.
+    """
+    if not criteria:
+        return "- None specified"
+    return "\n".join(f"- {k}: {v}" for k, v in criteria.items())
+
+
+def _format_visits(visits: dict) -> str:
+    """Format visit templates as bullet list.
+
+    Args:
+        visits: Visit template key-value pairs.
+
+    Returns:
+        Formatted string with bullet points.
+    """
+    if not visits:
+        return "- No visit schedule defined"
+    return "\n".join(f"- {k}: {v}" for k, v in visits.items())
+
+
 def build_conversation_config_override(
     *,
     system_prompt: str,

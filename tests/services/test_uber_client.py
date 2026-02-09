@@ -1,7 +1,5 @@
 """Tests for the mock Uber Health client."""
 
-
-
 from src.services.uber_client import (
     MockUberHealthClient,
     RideBookingResult,

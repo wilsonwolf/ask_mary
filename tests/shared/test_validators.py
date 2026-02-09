@@ -1,6 +1,5 @@
 """Tests for shared input validators."""
 
-
 from src.shared.validators import (
     is_dnc_blocked,
     validate_channel,

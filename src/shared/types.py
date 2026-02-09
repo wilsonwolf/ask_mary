@@ -51,6 +51,7 @@ class EligibilityStatus(str, enum.Enum):
 class AppointmentStatus(str, enum.Enum):
     """Appointment lifecycle state."""
 
+    HELD = "held"
     BOOKED = "booked"
     CONFIRMED = "confirmed"
     COMPLETED = "completed"
