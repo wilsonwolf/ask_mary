@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.identity import detect_duplicate, verify_identity
@@ -24,7 +25,9 @@ from src.agents.screening import (
     check_hard_excludes,
     determine_eligibility,
     get_screening_criteria,
+    record_screening_response,
 )
+from src.agents.transport import book_transport
 from src.api.event_bus import broadcast_event
 from src.config.settings import get_settings
 from src.db.events import log_event
@@ -106,7 +109,45 @@ async def handle_server_tool(
     if handler is None:
         return {"error": f"unknown_tool: {tool_name}"}
 
+    params["_conversation_id"] = request.conversation_id
     return await handler(session, params)
+
+
+async def _resolve_call_sid(
+    session: AsyncSession,
+    conversation_id: str | None,
+) -> str | None:
+    """Resolve Twilio call_sid from ElevenLabs conversation_id.
+
+    Looks up the conversation record to find a stored Twilio
+    call SID. For full functionality, the ElevenLabs agent must
+    include twilio_call_sid in its dynamic variables so it
+    appears in server tool params directly.
+
+    Args:
+        session: Active database session.
+        conversation_id: ElevenLabs conversation ID string.
+
+    Returns:
+        Twilio call SID or None if not found.
+    """
+    if not conversation_id:
+        return None
+    from src.db.models import Conversation
+
+    result = await session.execute(
+        select(Conversation).where(
+            Conversation.call_sid == conversation_id,
+        )
+    )
+    conversation = result.scalar_one_or_none()
+    if conversation and conversation.twilio_call_sid:
+        return conversation.twilio_call_sid
+    logger.debug(
+        "call_sid_not_resolved",
+        extra={"conversation_id": conversation_id},
+    )
+    return None
 
 
 async def _log_and_broadcast(
@@ -276,6 +317,69 @@ async def _handle_determine_eligibility(
     return result
 
 
+async def _handle_record_screening_response(
+    session: AsyncSession,
+    params: dict,
+) -> dict:
+    """Handle screening response recording server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id,
+            question_key, answer, provenance.
+
+    Returns:
+        Recording result.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await record_screening_response(
+        session, participant_id, params["trial_id"],
+        params["question_key"], params["answer"],
+        params.get("provenance", "patient_stated"),
+    )
+    await _log_and_broadcast(
+        session, participant_id, "screening_response_recorded",
+        {
+            "question_key": params["question_key"],
+            "answer": params["answer"],
+        },
+        trial_id=params.get("trial_id"),
+    )
+    return result
+
+
+async def _handle_book_transport(
+    session: AsyncSession,
+    params: dict,
+) -> dict:
+    """Handle transport booking server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, appointment_id,
+            pickup_address.
+
+    Returns:
+        Transport booking result.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await book_transport(
+        session, participant_id,
+        uuid.UUID(params["appointment_id"]),
+        params["pickup_address"],
+    )
+    if result.get("booked"):
+        await _log_and_broadcast(
+            session, participant_id, "transport_booked",
+            {
+                "ride_id": result.get("ride_id"),
+                "appointment_id": params["appointment_id"],
+            },
+            trial_id=params.get("trial_id"),
+        )
+    return result
+
+
 async def _handle_safety_check(
     session: AsyncSession,
     params: dict,
@@ -290,13 +394,18 @@ async def _handle_safety_check(
         Safety gate result as dict.
     """
     participant_id = uuid.UUID(params["participant_id"])
+    call_sid = params.get("call_sid")
+    if not call_sid:
+        call_sid = await _resolve_call_sid(
+            session, params.get("_conversation_id"),
+        )
     result = await run_safety_gate(
         params["response"],
         session,
         participant_id,
         trial_id=params.get("trial_id"),
         context=params.get("context"),
-        call_sid=params.get("call_sid"),
+        call_sid=call_sid,
     )
     result_dict = {
         "triggered": result.triggered,
@@ -317,6 +426,8 @@ TOOL_HANDLERS = {
     "get_screening_criteria": _handle_get_screening_criteria,
     "check_hard_excludes": _handle_check_hard_excludes,
     "determine_eligibility": _handle_determine_eligibility,
+    "record_screening_response": _handle_record_screening_response,
+    "book_transport": _handle_book_transport,
     "safety_check": _handle_safety_check,
 }
 
@@ -342,8 +453,6 @@ async def _get_or_create_conversation(
     Returns:
         Conversation model instance (existing or newly created).
     """
-    from sqlalchemy import select
-
     from src.db.models import Conversation
 
     result = await session.execute(
@@ -609,3 +718,67 @@ async def handle_dtmf_verify(
         dob_year,
         zip_code,
     )
+
+
+# --- Twilio Status Callback ---
+
+
+class TwilioStatusPayload(BaseModel):
+    """Twilio call status callback payload.
+
+    ElevenLabs sets this as the statusCallback URL when placing
+    calls via Twilio. Captures the Twilio CallSid so we can
+    associate it with the ElevenLabs conversation for warm transfer.
+
+    Attributes:
+        CallSid: Twilio call SID.
+        CallStatus: Twilio call status string.
+        conversation_id: ElevenLabs conversation ID (custom param).
+    """
+
+    CallSid: str
+    CallStatus: str
+    conversation_id: str | None = None
+
+
+@router.post("/twilio/status")
+async def handle_twilio_status(
+    payload: TwilioStatusPayload,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict:
+    """Capture Twilio CallSid and associate with conversation.
+
+    Called by Twilio when call status changes. Updates the
+    conversation row with the Twilio CallSid so warm transfer
+    can resolve it mid-call.
+
+    Args:
+        payload: Twilio status callback payload.
+        session: Injected database session.
+
+    Returns:
+        Acknowledgement dict.
+    """
+    if not payload.conversation_id:
+        return {"ok": True, "updated": False}
+
+    from src.db.models import Conversation
+
+    result = await session.execute(
+        select(Conversation).where(
+            Conversation.call_sid == payload.conversation_id,
+        )
+    )
+    conversation = result.scalar_one_or_none()
+    if conversation:
+        conversation.twilio_call_sid = payload.CallSid
+        logger.info(
+            "twilio_call_sid_captured",
+            extra={
+                "conversation_id": payload.conversation_id,
+                "twilio_call_sid": payload.CallSid,
+            },
+        )
+        return {"ok": True, "updated": True}
+
+    return {"ok": True, "updated": False}

@@ -431,6 +431,19 @@ async def _call_elevenlabs(
         dynamic_variables=dynamic_vars,
         config_override=config_override,
     )
+
+    from src.db.models import Conversation
+
+    conversation = Conversation(
+        participant_id=participant_id,
+        trial_id=trial_id,
+        channel="voice",
+        direction="outbound",
+        call_sid=call_result.conversation_id,
+        status="active",
+    )
+    session.add(conversation)
+
     return {
         "status": call_result.status,
         "conversation_id": call_result.conversation_id,

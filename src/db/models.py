@@ -188,6 +188,7 @@ class Conversation(Base):
     direction: Mapped[str] = mapped_column(String(20))
     agent_name: Mapped[str | None] = mapped_column(String(50))
     call_sid: Mapped[str | None] = mapped_column(String(100), unique=True)
+    twilio_call_sid: Mapped[str | None] = mapped_column(String(100))
     audio_gcs_path: Mapped[str | None] = mapped_column(String(500))
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     status: Mapped[str] = mapped_column(String(20), default="active")

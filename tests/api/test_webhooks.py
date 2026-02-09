@@ -88,6 +88,10 @@ class TestServerToolEndpoint:
             "src.api.webhooks.log_event",
             new_callable=AsyncMock,
             return_value=None,
+        ), patch(
+            "src.api.webhooks._resolve_call_sid",
+            new_callable=AsyncMock,
+            return_value=None,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(

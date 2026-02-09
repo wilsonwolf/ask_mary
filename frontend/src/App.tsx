@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
 import { CallPanel } from './components/CallPanel'
+import { CoordinatorConfig } from './components/CoordinatorConfig'
 import { DemoButton } from './components/DemoButton'
 import { EligibilityPanel } from './components/EligibilityPanel'
 import { EventsFeed } from './components/EventsFeed'
@@ -32,6 +33,7 @@ export default function App() {
           <p className="text-sm text-gray-500">AI Clinical Trial Scheduling Agent</p>
         </div>
         <div className="flex items-center gap-4">
+          <CoordinatorConfig />
           <span className="flex items-center gap-1.5 text-xs">
             <span
               className={`inline-block h-2 w-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-400'}`}

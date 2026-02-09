@@ -102,18 +102,6 @@ async def record_screening_response(
         "provenance": provenance,
     }
     pt.screening_responses = responses
-    await log_event(
-        session,
-        participant_id=participant_id,
-        event_type="screening_response_recorded",
-        trial_id=trial_id,
-        payload={
-            "question_key": question_key,
-            "answer": answer,
-            "provenance": provenance,
-        },
-        provenance=provenance,
-    )
     return {"recorded": True}
 
 
@@ -144,11 +132,7 @@ async def determine_eligibility(
     for key, required_value in exclusions.items():
         if responses.get(key) == required_value:
             pt.eligibility_status = "ineligible"
-            result = {"status": "ineligible", "reason": f"excluded_by_{key}"}
-            await _log_eligibility(
-                session, participant_id, trial_id, result,
-            )
-            return result
+            return {"status": "ineligible", "reason": f"excluded_by_{key}"}
 
     # Check if all inclusion criteria have responses
     inclusions = criteria.get("inclusion", {})
@@ -157,35 +141,7 @@ async def determine_eligibility(
         return {"status": "needs_human", "missing_criteria": missing}
 
     pt.eligibility_status = "eligible"
-    result = {"status": "eligible"}
-    await _log_eligibility(
-        session, participant_id, trial_id, result,
-    )
-    return result
-
-
-async def _log_eligibility(
-    session: AsyncSession,
-    participant_id: uuid.UUID,
-    trial_id: str,
-    result: dict,
-) -> None:
-    """Log eligibility determination event.
-
-    Args:
-        session: Active database session.
-        participant_id: Participant UUID.
-        trial_id: Trial string identifier.
-        result: Eligibility result dict.
-    """
-    await log_event(
-        session,
-        participant_id=participant_id,
-        event_type="eligibility_determined",
-        trial_id=trial_id,
-        payload=result,
-        provenance="system",
-    )
+    return {"status": "eligible"}
 
 
 async def record_caregiver_info(

@@ -47,3 +47,10 @@ export function startDemoCall(participantId: string, trialId: string) {
     body: JSON.stringify({ participant_id: participantId, trial_id: trialId }),
   })
 }
+
+export function updateCoordinatorPhone(trialId: string, phone: string) {
+  return fetchJson<Record<string, unknown>>(`/api/trials/${trialId}/coordinator`, {
+    method: 'PATCH',
+    body: JSON.stringify({ coordinator_phone: phone }),
+  })
+}

@@ -10,6 +10,7 @@ Dependency direction: workers → services → db → shared.
 
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,9 +122,50 @@ async def _handle_confirmation_check(
             provenance="system",
             channel="system",
         )
+        await _release_and_follow_up(
+            participant_id, appointment_id,
+        )
         return {"status": "no_response"}
 
     return {"status": appointment.status}
+
+
+async def _release_and_follow_up(
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+) -> None:
+    """Release slot and schedule follow-up after confirmation expiry.
+
+    Args:
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+    """
+    from src.services.cloud_tasks_client import enqueue_reminder
+
+    now = datetime.now(UTC)
+    try:
+        await enqueue_reminder(
+            participant_id=participant_id,
+            appointment_id=appointment_id,
+            template_id="slot_release",
+            channel="system",
+            send_at=now,
+            idempotency_key=f"expire-release-{appointment_id}",
+        )
+    except Exception:
+        logger.debug("slot_release_enqueue_failed")
+
+    try:
+        await enqueue_reminder(
+            participant_id=participant_id,
+            appointment_id=appointment_id,
+            template_id="appointment_reminder",
+            channel="sms",
+            send_at=now + timedelta(hours=24),
+            idempotency_key=f"followup-{appointment_id}",
+        )
+    except Exception:
+        logger.debug("followup_enqueue_failed")
 
 
 async def _handle_slot_release(
