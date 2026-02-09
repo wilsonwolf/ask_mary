@@ -176,6 +176,7 @@ class ElevenLabsClient:
         customer_number: str,
         dynamic_variables: dict | None = None,
         config_override: dict | None = None,
+        status_callback: str | None = None,
     ) -> CallResult:
         """Initiate an outbound call via ElevenLabs Conversational AI.
 
@@ -183,6 +184,8 @@ class ElevenLabsClient:
             customer_number: Participant phone number to call.
             dynamic_variables: Dynamic variables for the conversation.
             config_override: Conversation config override.
+            status_callback: Twilio status callback URL with
+                conversation_id for CallSid capture.
 
         Returns:
             CallResult with conversation ID and status.
@@ -196,6 +199,9 @@ class ElevenLabsClient:
             payload["dynamic_variables"] = dynamic_variables
         if config_override:
             payload["conversation_config_override"] = config_override
+        if status_callback:
+            payload["status_callback"] = status_callback
+            payload["status_callback_method"] = "POST"
 
         async with httpx.AsyncClient() as client:
             response = await client.post(

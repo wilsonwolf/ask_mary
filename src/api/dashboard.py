@@ -421,6 +421,27 @@ async def _call_elevenlabs(
         ),
     )
 
+    from src.db.models import Conversation
+
+    conversation = Conversation(
+        participant_id=participant_id,
+        trial_id=trial_id,
+        channel="voice",
+        direction="outbound",
+        status="initiating",
+    )
+    session.add(conversation)
+    await session.flush()
+
+    status_callback = None
+    if settings.public_base_url:
+        base = settings.public_base_url.rstrip("/")
+        tracking_id = str(conversation.conversation_id)
+        status_callback = (
+            f"{base}/webhooks/twilio/status"
+            f"?conversation_id={tracking_id}"
+        )
+
     client = ElevenLabsClient(
         api_key=settings.elevenlabs_api_key,
         agent_id=settings.elevenlabs_agent_id,
@@ -430,19 +451,11 @@ async def _call_elevenlabs(
         customer_number=participant.phone,
         dynamic_variables=dynamic_vars,
         config_override=config_override,
+        status_callback=status_callback,
     )
 
-    from src.db.models import Conversation
-
-    conversation = Conversation(
-        participant_id=participant_id,
-        trial_id=trial_id,
-        channel="voice",
-        direction="outbound",
-        call_sid=call_result.conversation_id,
-        status="active",
-    )
-    session.add(conversation)
+    conversation.call_sid = call_result.conversation_id
+    conversation.status = "active"
 
     return {
         "status": call_result.status,

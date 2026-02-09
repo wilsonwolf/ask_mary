@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str = ""
 
+    # Public URL (for Twilio status callbacks)
+    public_base_url: str = ""
+
     # Dashboard / CORS
     cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
     demo_participant_phone: str = ""

@@ -11,9 +11,11 @@ direction: api -> agents -> services -> db -> shared. These webhooks are
 the integration point between ElevenLabs server tools and our agent logic.
 """
 
+from __future__ import annotations
+
 import logging
 import uuid
-from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -38,6 +40,9 @@ from src.services.gcs_client import (
     upload_audio,
 )
 from src.services.safety_service import run_safety_gate
+
+if TYPE_CHECKING:
+    from src.db.models import Conversation
 
 logger = logging.getLogger(__name__)
 
@@ -724,49 +729,51 @@ async def handle_dtmf_verify(
 
 
 class TwilioStatusPayload(BaseModel):
-    """Twilio call status callback payload.
-
-    ElevenLabs sets this as the statusCallback URL when placing
-    calls via Twilio. Captures the Twilio CallSid so we can
-    associate it with the ElevenLabs conversation for warm transfer.
+    """Twilio call status callback payload (form-encoded).
 
     Attributes:
         CallSid: Twilio call SID.
         CallStatus: Twilio call status string.
-        conversation_id: ElevenLabs conversation ID (custom param).
     """
 
     CallSid: str
     CallStatus: str
-    conversation_id: str | None = None
 
 
 @router.post("/twilio/status")
 async def handle_twilio_status(
     payload: TwilioStatusPayload,
+    conversation_id: str | None = None,
     session: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Capture Twilio CallSid and associate with conversation.
 
-    Called by Twilio when call status changes. Updates the
-    conversation row with the Twilio CallSid so warm transfer
-    can resolve it mid-call.
+    Called by Twilio when call status changes. The conversation_id
+    is passed as a URL query parameter (set when building the
+    status_callback URL). Updates the conversation row with the
+    Twilio CallSid so warm transfer can resolve it mid-call.
 
     Args:
         payload: Twilio status callback payload.
+        conversation_id: Conversation UUID from query string.
         session: Injected database session.
 
     Returns:
         Acknowledgement dict.
     """
-    if not payload.conversation_id:
+    if not conversation_id:
         return {"ok": True, "updated": False}
 
     from src.db.models import Conversation
 
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        return {"ok": True, "updated": False}
+
     result = await session.execute(
         select(Conversation).where(
-            Conversation.call_sid == payload.conversation_id,
+            Conversation.conversation_id == conv_uuid,
         )
     )
     conversation = result.scalar_one_or_none()
@@ -775,7 +782,7 @@ async def handle_twilio_status(
         logger.info(
             "twilio_call_sid_captured",
             extra={
-                "conversation_id": payload.conversation_id,
+                "conversation_id": conversation_id,
                 "twilio_call_sid": payload.CallSid,
             },
         )

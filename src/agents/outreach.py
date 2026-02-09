@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
-from src.config.settings import get_settings
+from src.config.settings import Settings, get_settings
 from src.db.events import log_event
 from src.db.postgres import get_participant_by_id
 from src.db.trials import get_trial
@@ -95,6 +95,25 @@ async def assemble_call_context(
     }
 
 
+def _build_status_callback(
+    settings: Settings,
+    tracking_id: str,
+) -> str | None:
+    """Build Twilio status callback URL with tracking ID.
+
+    Args:
+        settings: Application settings.
+        tracking_id: Conversation UUID for Twilio to echo back.
+
+    Returns:
+        Status callback URL with conversation_id param, or None.
+    """
+    if not settings.public_base_url:
+        return None
+    base = settings.public_base_url.rstrip("/")
+    return f"{base}/webhooks/twilio/status?conversation_id={tracking_id}"
+
+
 async def initiate_outbound_call(
     session: AsyncSession,
     participant_id: uuid.UUID,
@@ -110,12 +129,25 @@ async def initiate_outbound_call(
     Returns:
         Dict with call initiation status and conversation_id.
     """
+    from src.db.models import Conversation
+
     context = await assemble_call_context(
         session,
         participant_id,
         trial_id,
     )
     settings = get_settings()
+
+    conversation = Conversation(
+        participant_id=participant_id,
+        trial_id=trial_id,
+        channel="voice",
+        direction="outbound",
+        status="initiating",
+    )
+    session.add(conversation)
+    await session.flush()
+
     el_client = ElevenLabsClient(
         api_key=settings.elevenlabs_api_key,
         agent_id=settings.elevenlabs_agent_id,
@@ -142,11 +174,19 @@ async def initiate_outbound_call(
             f"calling about the {context['trial_name']} study."
         ),
     )
+    status_callback = _build_status_callback(
+        settings, str(conversation.conversation_id),
+    )
     call_result = await el_client.initiate_outbound_call(
         customer_number=context["participant_phone"],
         dynamic_variables=dynamic_vars,
         config_override=config_override,
+        status_callback=status_callback,
     )
+
+    conversation.call_sid = call_result.conversation_id
+    conversation.status = "active"
+
     await log_event(
         session,
         participant_id=participant_id,
