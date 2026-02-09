@@ -7,6 +7,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.api.app import create_app
+from src.db.session import get_async_session
 
 
 @pytest.fixture
@@ -367,3 +368,51 @@ class TestSignedUrlEndpoint:
         data = response.json()
         assert data["url"] == "https://storage.googleapis.com/signed"
         assert data["ttl_seconds"] == 3600
+
+
+class TestTwilioStatusCallback:
+    """Twilio status callback for CallSid capture."""
+
+    async def test_twilio_status_updates_call_sid(self, app) -> None:
+        """Form-encoded POST updates conversation with CallSid."""
+        conv_id = uuid.uuid4()
+        conversation = MagicMock()
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = conversation
+
+        session = AsyncMock()
+        session.execute = AsyncMock(return_value=result)
+
+        async def override_session():
+            yield session
+
+        app.dependency_overrides[get_async_session] = override_session
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    f"/webhooks/twilio/status?conversation_id={conv_id}",
+                    data={"CallSid": "CA123", "CallStatus": "in-progress"},
+                )
+            assert response.status_code == 200
+            assert response.json()["updated"] is True
+            assert conversation.twilio_call_sid == "CA123"
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_twilio_status_no_conversation_id(self, app) -> None:
+        """Returns updated=False when no conversation_id query param."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/webhooks/twilio/status",
+                data={"CallSid": "CA123", "CallStatus": "in-progress"},
+            )
+        assert response.status_code == 200
+        assert response.json()["updated"] is False

@@ -17,7 +17,7 @@ import logging
 import uuid
 from typing import TYPE_CHECKING
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Form, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -728,33 +728,23 @@ async def handle_dtmf_verify(
 # --- Twilio Status Callback ---
 
 
-class TwilioStatusPayload(BaseModel):
-    """Twilio call status callback payload (form-encoded).
-
-    Attributes:
-        CallSid: Twilio call SID.
-        CallStatus: Twilio call status string.
-    """
-
-    CallSid: str
-    CallStatus: str
-
-
 @router.post("/twilio/status")
 async def handle_twilio_status(
-    payload: TwilioStatusPayload,
-    conversation_id: str | None = None,
+    CallSid: str = Form(...),
+    CallStatus: str = Form(...),
+    conversation_id: str | None = Query(None),
     session: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Capture Twilio CallSid and associate with conversation.
 
-    Called by Twilio when call status changes. The conversation_id
-    is passed as a URL query parameter (set when building the
-    status_callback URL). Updates the conversation row with the
-    Twilio CallSid so warm transfer can resolve it mid-call.
+    Twilio POSTs form-encoded data (CallSid, CallStatus). The
+    conversation_id is a URL query parameter (set when building
+    the status_callback URL). Updates the conversation row with
+    the Twilio CallSid so warm transfer can resolve it mid-call.
 
     Args:
-        payload: Twilio status callback payload.
+        CallSid: Twilio call SID (form field).
+        CallStatus: Twilio call status (form field).
         conversation_id: Conversation UUID from query string.
         session: Injected database session.
 
@@ -778,12 +768,13 @@ async def handle_twilio_status(
     )
     conversation = result.scalar_one_or_none()
     if conversation:
-        conversation.twilio_call_sid = payload.CallSid
+        conversation.twilio_call_sid = CallSid
         logger.info(
             "twilio_call_sid_captured",
             extra={
                 "conversation_id": conversation_id,
-                "twilio_call_sid": payload.CallSid,
+                "twilio_call_sid": CallSid,
+                "call_status": CallStatus,
             },
         )
         return {"ok": True, "updated": True}
