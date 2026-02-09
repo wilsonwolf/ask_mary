@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     cloud_sql_user: str = "postgres"
     cloud_sql_host: str = "127.0.0.1"
     cloud_sql_port: int = 5432
+    cloud_sql_ssl: str = "disable"
 
     # Participant ID hashing
     mary_id_pepper: str = ""
