@@ -1,7 +1,7 @@
 # Ask Mary — Implementation Tracker
 
 > Auto-updated at the end of each phase by the tracker enforcement hook.
-> Last updated: 2026-02-08 Phase 3 complete.
+> Last updated: 2026-02-12 Phase 4/5 in progress.
 
 ---
 
@@ -118,11 +118,20 @@
 
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
-| 4.1 Demo dashboard (React + WS) | NOT STARTED | — | — | 4 panels + events feed per demo script |
-| 4.2 Dashboard API + WebSocket | NOT STARTED | src/api/dashboard.py, src/api/webhooks.py | — | REST + WS endpoints |
-| 4.3 Pub/Sub event bridge | NOT STARTED | src/workers/cdc.py | — | App-level publisher → Databricks |
-| 4.4 Deploy to GCP Cloud Run | NOT STARTED | Dockerfile, cloudbuild.yaml | — | Docker build + deploy |
-| 4.5 End-to-end test call | NOT STARTED | — | — | Human + Claude Code |
+| 4.1 Demo dashboard (React + WS) | DONE | frontend/src/ (16 components, hooks, types) | — | 4 panels (Call, Eligibility, Scheduling, Transport) + events feed. React/TS + Vite. |
+| 4.2 Dashboard API + WebSocket | DONE | src/api/dashboard.py, src/api/event_bus.py, src/api/webhooks.py | tests/api/test_dashboard.py (9) | REST endpoints + /ws/events WebSocket. Demo config + start-call endpoints. |
+| 4.3 Pub/Sub event bridge | NOT STARTED | src/workers/cdc.py | — | App-level publisher → Databricks. Deferred (no Databricks creds). |
+| 4.4 Deploy to GCP Cloud Run | DONE | Dockerfile, cloudbuild.yaml | — | Deployed to https://ask-mary-1030626458480.us-west2.run.app |
+| 4.5 End-to-end test call | IN PROGRESS | — | — | Call initiates successfully. Tools not yet registered on ElevenLabs. |
+
+**Phase 4 additional work (Phase 5 plan — WP5-WP9):**
+| Item | Status | Files | Tests | Notes |
+|------|--------|-------|-------|-------|
+| WP5: Scheduling webhook handlers | DONE | src/api/webhooks.py | tests/api/test_webhooks_scheduling.py (6) | check_availability + book_appointment handlers. Aliases for ElevenLabs tool names. |
+| WP6: Dynamic variables (participant_id/trial_id) | DONE | src/services/elevenlabs_client.py, src/api/dashboard.py | tests/services/test_elevenlabs_client.py (+2) | participant_id + trial_id passed as ElevenLabs dynamic variables. |
+| WP7: Enriched transport broadcast | DONE | src/agents/transport.py, src/api/webhooks.py | tests/agents/test_transport.py (updated) | pickup_address, dropoff_address, scheduled_pickup_at in return + broadcast. |
+| WP8: Frontend state fixes | DONE | frontend/src/hooks/useDemoState.ts, frontend/src/components/TransportPanel.tsx, frontend/src/App.tsx, frontend/src/types/events.ts | — | screening_response_recorded + availability_checked reducer cases. TransportPanel shows pickup address. |
+| WP9: ElevenLabs tool registration script | DONE | scripts/register_elevenlabs_tools.py | — | Two-step: POST /v1/convai/tools to create, then PATCH tool_ids to attach. NOT YET RUN. |
 
 ---
 
@@ -130,9 +139,9 @@
 
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
-| 5.1 Seed demo data | NOT STARTED | — | — | Trial + participant + calendar slots |
-| 5.2 Demo dry run | NOT STARTED | — | — | Full 60-second demo per demo_script.md |
-| 5.3 Fix blockers from dry run | NOT STARTED | — | — | Common: WS disconnect, event ordering, DTMF timing |
+| 5.1 Seed demo data | DONE | scripts/seed_demo_data.py | — | Trial + participant seeded to Cloud SQL |
+| 5.2 ElevenLabs tool registration | NOT STARTED | scripts/register_elevenlabs_tools.py | — | Must run after deployment to register webhook tools |
+| 5.3 Demo dry run | NOT STARTED | — | — | Full 60-second demo per demo_script.md |
 | 5.4 Safety escalation test | NOT STARTED | — | — | "chest pain" → handoff queue |
 | 5.5 Final demo run (SUCCESS) | NOT STARTED | — | — | Success gate for the project |
 
@@ -145,11 +154,11 @@
 | Phase 1: Foundation | 8 + 7 extras | 12 | 0 | 3 |
 | Phase 2: Core Agents | 10 + 19 corrections | 29 | 0 | 0 |
 | Phase 3: Safety & Testing | 5 + 5 fixes | 10 | 0 | 0 |
-| Phase 4: Frontend & Polish | 5 | 0 | 0 | 5 |
-| Phase 5: Demo Validation | 5 | 0 | 0 | 5 |
-| **Total** | **64** | **51** | **0** | **8** |
+| Phase 4: Frontend & Polish | 5 + 5 WPs | 8 | 1 | 1 |
+| Phase 5: Demo Validation | 5 | 1 | 0 | 4 |
+| **Total** | **69** | **60** | **1** | **8** |
 
-**Test count: 272 passing, 2 skipped / 0 failing (12 DB integration errors require live DB)**
+**Test count: 339 passing, 2 skipped / 0 failing (12 DB integration errors require live DB)**
 
 ---
 
@@ -205,3 +214,7 @@ Phase 4 deploy → Phase 5 demo validation
 | Supervisor audits post-call transcripts | audit_transcript() checks disclosure→consent→identity ordering. check_phi_leak() scans pre-identity entries for PHI patterns. detect_answer_inconsistencies() finds contradictions. | 2026-02-08 |
 | Adversarial recheck at T+14 days | schedule_recheck() enqueues Cloud Tasks job. run_adversarial_rescreen() marks results with system provenance. | 2026-02-08 |
 | Eval framework uses YAML scenario files | 11 scenarios in eval/scenarios/. Runner loads YAML, mocks DB, calls agent helpers per step, checks assertions. | 2026-02-08 |
+| ElevenLabs as live orchestrator (not OpenAI agents) | ElevenLabs ConvAI handles conversation flow + tool-calling during live calls. Webhook handlers call agent helper functions directly, bypassing the OpenAI Agents SDK Agent() objects. See KI-10. | 2026-02-12 |
+| ElevenLabs tools are separate API resources | Tools must be created via POST /v1/convai/tools first, then attached to agent via PATCH tool_ids. Inline tool definitions on PATCH are silently ignored. | 2026-02-12 |
+| preferred_dates sent as comma-separated string | ElevenLabs sends all tool params as strings. _handle_check_availability parses "2026-03-10,2026-03-11" into a list. | 2026-02-12 |
+| Cloud Run deployed with min-instances=1 | Avoids cold start latency on webhook calls from ElevenLabs. Service URL: ask-mary-1030626458480.us-west2.run.app | 2026-02-12 |

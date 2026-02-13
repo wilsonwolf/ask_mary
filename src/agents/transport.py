@@ -78,17 +78,21 @@ async def book_transport(
     appointment = result.scalar_one_or_none()
     pickup_time = appointment.scheduled_at - timedelta(hours=1)
 
+    dropoff = appointment.site_address or ""
     ride = await create_ride(
         session,
         appointment_id=appointment_id,
         participant_id=participant_id,
         pickup_address=pickup_address,
-        dropoff_address=appointment.site_address or "",
+        dropoff_address=dropoff,
         scheduled_pickup_at=pickup_time,
     )
     return {
         "booked": True,
         "ride_id": str(ride.ride_id),
+        "pickup_address": pickup_address,
+        "dropoff_address": dropoff,
+        "scheduled_pickup_at": pickup_time.isoformat(),
     }
 
 

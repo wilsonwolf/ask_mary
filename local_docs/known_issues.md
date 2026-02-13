@@ -1,6 +1,6 @@
 # Ask Mary — Known Issues
 
-> Last updated: 2026-02-08 (post-Phase 3 complete)
+> Last updated: 2026-02-12 (Phase 4/5 in progress)
 
 ---
 
@@ -55,6 +55,31 @@
 - **Files**: `src/shared/validators.py`
 - **Description**: `check_identity_gate()` and `check_disclosure_gate()` need to load a participant from the DB, but shared/ cannot import from db/ (architecture hook enforces this). A patchable `get_participant_by_id()` stub is used with `Any` type annotations. Tests mock it. Production must wire the real DB lookup at app startup.
 - **Action needed**: Wire `src.shared.validators.get_participant_by_id = src.db.postgres.get_participant_by_id` at app initialization.
+
+### KI-10: OpenAI Agents SDK agents are not used during live calls (ARCHITECTURE)
+- **Severity**: High (architecture gap — safety and checks/balances)
+- **Files**: `src/agents/*.py`, `src/agents/pipeline.py`, `src/api/webhooks.py`
+- **Description**: The project has 8 OpenAI Agents SDK agents (orchestrator, outreach, identity, screening, scheduling, transport, comms, supervisor, adversarial) defined with `Agent()` objects, `@function_tool` decorators, and a `build_pipeline()` handoff chain. **None of these are invoked during live ElevenLabs calls.** Instead, ElevenLabs acts as both the voice interface AND the orchestrator — its system prompt drives conversation flow and tool-calling. Webhook handlers route to agent *helper functions* (e.g., `verify_identity()`, `record_screening_response()`) directly, bypassing the Agent SDK entirely.
+- **What's missing**:
+  1. **Pipeline state tracking** — `participant_trials.pipeline_status` is never updated during calls
+  2. **Agent reasoning logging** — `agent_reasoning` table is never written to during calls
+  3. **Post-call supervisor audit** — `supervisor_agent` is never triggered after call completion
+  4. **DNC/consent gate pre-checks** — not enforced in webhook handlers (relies on ElevenLabs prompt)
+  5. **Adversarial recheck scheduling** — not triggered after screening
+  6. **Multi-agent checks and balances** — the orchestrator→handoff chain that ensures gate sequence (Disclosure → Consent → Identity → Screening → Scheduling) is not enforced at the backend level; it depends entirely on the ElevenLabs system prompt
+- **Why it's this way**: ElevenLabs ConvAI IS an LLM agent — it reasons, decides tool calls, and manages conversation flow. Running a second LLM (OpenAI orchestrator) in series would add 1-2s latency per tool call and create decision conflicts. For a 12-hour hackathon MVP, the pragmatic choice was ElevenLabs-as-orchestrator with direct helper function calls.
+- **ElevenLabs capabilities that could help** (researched 2026-02-12):
+  - **Agent-to-agent transfer** (`transfer_to_agent`): First-class support. Could implement the S0-S9 pipeline as separate ElevenLabs agents with handoffs.
+  - **Agent Workflows**: Visual flow editor with subagent nodes, branching, and LLM-condition edges. Could enforce the gate sequence.
+  - **Custom output guardrails** (added 2026-02-09): User-defined content filtering with prompt instructions, evaluated by Gemini models. Terminates call on violation (no rewrite/redirect — binary pass/fail).
+  - **No agent-as-auditor**: Cannot have one ElevenLabs agent review another's responses inline before speech. Would need external implementation via WebSocket monitoring feed.
+  - **Post-call analysis**: Success evaluation + structured data extraction from completed conversations. Could trigger supervisor audit.
+  - **Real-time monitoring**: WebSocket feed of live conversations. Could be consumed by an external supervisory system.
+- **Recommended path forward** (post-MVP):
+  - **Option A: ElevenLabs Workflows** — Implement the pipeline as an ElevenLabs workflow with subagent nodes for each gate. Enable built-in guardrails for hard safety boundaries. Use post-call webhooks to trigger supervisor audit. Pipeline state tracked in webhook handlers.
+  - **Option B: Hybrid with external safety loop** — Keep ElevenLabs as orchestrator. Add pipeline state tracking + agent reasoning logging to webhook handlers. Use WebSocket monitoring feed to run an external supervisor agent (OpenAI) in parallel. Trigger adversarial recheck via Cloud Tasks post-call.
+  - **Option C: Custom LLM integration** — Route ElevenLabs through a custom LLM endpoint that wraps OpenAI orchestrator. Full pipeline control, but highest complexity and latency.
+- **Action needed**: Architecture review to decide which option. The goal is ensuring safety checks and balances are enforced at the backend level, not just relied upon in the ElevenLabs prompt.
 
 ### KI-9: 22 pre-existing ruff lint warnings
 - **Severity**: Low (code quality)

@@ -1,17 +1,23 @@
 interface Props {
   pickupZip: string
+  pickupAddress: string
   transportStatus: string
   transportEta: string
   rideId: string
 }
 
 /** Panel 4: Transport / ride status, ETA, ride ID. */
-export function TransportPanel({ pickupZip, transportStatus, transportEta, rideId }: Props) {
+export function TransportPanel({ pickupZip, pickupAddress, transportStatus, transportEta, rideId }: Props) {
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-5">
       <h2 className="mb-4 text-lg font-semibold text-orange-400">Transport</h2>
-      {pickupZip ? (
+      {pickupZip || pickupAddress ? (
         <div className="space-y-2 text-sm">
+          {pickupAddress && (
+            <p className="text-gray-300">
+              Pickup: <span className="text-gray-100">{pickupAddress}</span>
+            </p>
+          )}
           <p className="text-gray-300">
             Pickup ZIP: <span className="font-mono text-gray-100">{pickupZip}</span>
           </p>

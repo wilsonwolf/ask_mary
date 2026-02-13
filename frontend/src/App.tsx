@@ -65,6 +65,7 @@ export default function App() {
         />
         <TransportPanel
           pickupZip={state.pickupZip}
+          pickupAddress={state.pickupAddress}
           transportStatus={state.transportStatus}
           transportEta={state.transportEta}
           rideId={state.rideId}

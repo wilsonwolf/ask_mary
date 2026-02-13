@@ -28,6 +28,7 @@ export interface DemoState {
   slots: string[]
   appointmentStatus: string
   pickupZip: string
+  pickupAddress: string
   transportStatus: string
   transportEta: string
   rideId: string

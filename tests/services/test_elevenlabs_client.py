@@ -23,11 +23,15 @@ class TestBuildDynamicVariables:
             trial_name="Diabetes Study A",
             site_name="OHSU Research Center",
             coordinator_phone="+15035551234",
+            participant_id="pid-123",
+            trial_id="trial-abc",
         )
         assert result["participant_name"] == "Jane Doe"
         assert result["trial_name"] == "Diabetes Study A"
         assert result["site_name"] == "OHSU Research Center"
         assert result["coordinator_phone"] == "+15035551234"
+        assert result["participant_id"] == "pid-123"
+        assert result["trial_id"] == "trial-abc"
 
     def test_returns_dict(self) -> None:
         """Return type is a plain dict."""
@@ -38,6 +42,17 @@ class TestBuildDynamicVariables:
             coordinator_phone="D",
         )
         assert isinstance(result, dict)
+
+    def test_defaults_participant_id_and_trial_id(self) -> None:
+        """participant_id and trial_id default to empty string."""
+        result = build_dynamic_variables(
+            participant_name="A",
+            trial_name="B",
+            site_name="C",
+            coordinator_phone="D",
+        )
+        assert result["participant_id"] == ""
+        assert result["trial_id"] == ""
 
 
 class TestBuildConversationConfigOverride:

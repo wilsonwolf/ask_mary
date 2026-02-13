@@ -21,6 +21,7 @@ from src.db.models import (
     Event,
     HandoffQueue,
     Participant,
+    ParticipantTrial,
     Trial,
 )
 from src.db.session import get_async_session
@@ -236,9 +237,7 @@ async def update_trial_coordinator(
     Returns:
         Updated trial coordinator info.
     """
-    result = await session.execute(
-        select(Trial).where(Trial.trial_id == trial_id)
-    )
+    result = await session.execute(select(Trial).where(Trial.trial_id == trial_id))
     trial = result.scalars().first()
     if trial is None:
         return {"error": "trial_not_found"}
@@ -275,20 +274,32 @@ async def get_demo_config(
     phone = settings.demo_participant_phone
     trial_id = settings.demo_trial_id
 
-    if not phone:
-        return {"error": "demo_participant_phone not configured"}
+    if phone:
+        result = await session.execute(
+            select(Participant)
+            .where(
+                Participant.phone == phone,
+            )
+            .limit(1)
+        )
+        participant = result.scalars().first()
+    else:
+        result = await session.execute(
+            select(Participant)
+            .join(ParticipantTrial)
+            .where(ParticipantTrial.trial_id == trial_id)
+            .order_by(Participant.created_at)
+            .limit(1)
+        )
+        participant = result.scalars().first()
 
-    result = await session.execute(
-        select(Participant).where(Participant.phone == phone).limit(1)
-    )
-    participant = result.scalars().first()
     if participant is None:
         return {"error": "demo participant not found"}
 
     return {
         "participant_id": str(participant.participant_id),
         "trial_id": trial_id,
-        "participant_name": f"{participant.first_name} {participant.last_name}",
+        "participant_name": (f"{participant.first_name} {participant.last_name}"),
         "phone": participant.phone,
     }
 
@@ -346,17 +357,19 @@ async def start_demo_call(
     )
 
     event_id = str(event.event_id) if event else str(uuid.uuid4())
-    await broadcast_event({
-        "type": "event",
-        "data": {
-            "event_id": event_id,
-            "event_type": "outbound_call_initiated",
-            "participant_id": request.participant_id,
-            "trial_id": request.trial_id,
-            "payload": {"phone": participant.phone},
-            "created_at": str(datetime.now(UTC)),
-        },
-    })
+    await broadcast_event(
+        {
+            "type": "event",
+            "data": {
+                "event_id": event_id,
+                "event_type": "outbound_call_initiated",
+                "participant_id": request.participant_id,
+                "trial_id": request.trial_id,
+                "payload": {"phone": participant.phone},
+                "created_at": str(datetime.now(UTC)),
+            },
+        }
+    )
 
     return call_result
 
@@ -389,9 +402,7 @@ async def _call_elevenlabs(
         build_system_prompt,
     )
 
-    trial_result = await session.execute(
-        select(Trial).where(Trial.trial_id == trial_id)
-    )
+    trial_result = await session.execute(select(Trial).where(Trial.trial_id == trial_id))
     trial = trial_result.scalars().first()
     if trial is None:
         return {"error": "trial_not_found"}
@@ -404,6 +415,8 @@ async def _call_elevenlabs(
         trial_name=trial.trial_name,
         site_name=trial.site_name or "",
         coordinator_phone=trial.coordinator_phone or "",
+        participant_id=str(participant_id),
+        trial_id=trial_id,
     )
     system_prompt = build_system_prompt(
         trial_name=trial.trial_name,
@@ -415,10 +428,7 @@ async def _call_elevenlabs(
     )
     config_override = build_conversation_config_override(
         system_prompt=system_prompt,
-        first_message=(
-            f"Hello {name}, this is Mary "
-            f"calling about the {trial.trial_name} study."
-        ),
+        first_message=(f"Hello {name}, this is Mary calling about the {trial.trial_name} study."),
     )
 
     from src.db.models import Conversation
@@ -437,10 +447,7 @@ async def _call_elevenlabs(
     if settings.public_base_url:
         base = settings.public_base_url.rstrip("/")
         tracking_id = str(conversation.conversation_id)
-        status_callback = (
-            f"{base}/webhooks/twilio/status"
-            f"?conversation_id={tracking_id}"
-        )
+        status_callback = f"{base}/webhooks/twilio/status?conversation_id={tracking_id}"
 
     client = ElevenLabsClient(
         api_key=settings.elevenlabs_api_key,

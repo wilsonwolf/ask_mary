@@ -14,6 +14,7 @@ const INITIAL_STATE: DemoState = {
   slots: [],
   appointmentStatus: '',
   pickupZip: '',
+  pickupAddress: '',
   transportStatus: '',
   transportEta: '',
   rideId: '',
@@ -36,11 +37,25 @@ function applyEvent(state: DemoState, event: EventData): DemoState {
     case 'dnc_set':
     case 'dnc_applied':
       return { ...base, dncBlocked: true }
+    case 'screening_response_recorded':
+      return {
+        ...base,
+        screeningQuestions: [
+          ...base.screeningQuestions,
+          `${event.payload?.question_key}: ${event.payload?.answer}`,
+        ],
+      }
     case 'screening_completed':
       return {
         ...base,
         eligibilityStatus: (event.payload?.status as string) || 'unknown',
         trialName: (event.payload?.trial_name as string) || base.trialName || event.trial_id || '',
+      }
+    case 'availability_checked':
+      return {
+        ...base,
+        availabilityChecking: false,
+        slots: (event.payload?.slots as string[]) || [],
       }
     case 'slot_booked':
     case 'appointment_booked':
@@ -49,14 +64,18 @@ function applyEvent(state: DemoState, event: EventData): DemoState {
       return { ...base, appointmentStatus: 'CONFIRMED' }
     case 'confirmation_received':
       return { ...base, appointmentStatus: 'CONFIRMED' }
-    case 'transport_booked':
+    case 'transport_booked': {
+      const pickupAddr = (event.payload?.pickup_address as string) || ''
+      const zip = (event.payload?.zip as string) || (pickupAddr ? pickupAddr.split(' ').pop() || '' : '')
       return {
         ...base,
         transportStatus: 'CONFIRMED',
         transportEta: (event.payload?.eta as string) || '',
         rideId: (event.payload?.ride_id as string) || '',
-        pickupZip: (event.payload?.zip as string) || '',
+        pickupZip: zip,
+        pickupAddress: pickupAddr,
       }
+    }
     case 'transport_failed':
       return { ...base, transportStatus: 'FAILED' }
     case 'handoff_created':

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Form, Query
@@ -23,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.agents.identity import detect_duplicate, verify_identity
+from src.agents.scheduling import book_appointment, find_available_slots
 from src.agents.screening import (
     check_hard_excludes,
     determine_eligibility,
@@ -182,17 +184,19 @@ async def _log_and_broadcast(
     )
     if event is None:
         return
-    await broadcast_event({
-        "type": "event",
-        "data": {
-            "event_id": str(event.event_id),
-            "event_type": event_type,
-            "participant_id": str(participant_id),
-            "trial_id": trial_id,
-            "payload": payload,
-            "created_at": str(event.created_at),
-        },
-    })
+    await broadcast_event(
+        {
+            "type": "event",
+            "data": {
+                "event_id": str(event.event_id),
+                "event_type": event_type,
+                "participant_id": str(participant_id),
+                "trial_id": trial_id,
+                "payload": payload,
+                "created_at": str(event.created_at),
+            },
+        }
+    )
 
 
 async def _handle_verify_identity(
@@ -215,11 +219,12 @@ async def _handle_verify_identity(
         int(params["dob_year"]),
         params["zip_code"],
     )
-    event_type = (
-        "identity_verified" if result.get("verified") else "identity_failed"
-    )
+    event_type = "identity_verified" if result.get("verified") else "identity_failed"
     await _log_and_broadcast(
-        session, participant_id, event_type, result,
+        session,
+        participant_id,
+        event_type,
+        result,
         trial_id=params.get("trial_id"),
     )
     return result
@@ -241,7 +246,10 @@ async def _handle_detect_duplicate(
     participant_id = uuid.UUID(params["participant_id"])
     result = await detect_duplicate(session, participant_id)
     await _log_and_broadcast(
-        session, participant_id, "duplicate_detected", result,
+        session,
+        participant_id,
+        "duplicate_detected",
+        result,
         trial_id=params.get("trial_id"),
     )
     return result
@@ -306,7 +314,9 @@ async def _handle_determine_eligibility(
     participant_id = uuid.UUID(params["participant_id"])
     trial_id = params["trial_id"]
     result = await determine_eligibility(
-        session, participant_id, trial_id,
+        session,
+        participant_id,
+        trial_id,
     )
     if "error" in result:
         event_type = "screening_error"
@@ -316,7 +326,10 @@ async def _handle_determine_eligibility(
     trial_name = trial.trial_name if trial else trial_id
     payload = {**result, "trial_name": trial_name}
     await _log_and_broadcast(
-        session, participant_id, event_type, payload,
+        session,
+        participant_id,
+        event_type,
+        payload,
         trial_id=trial_id,
     )
     return result
@@ -338,18 +351,98 @@ async def _handle_record_screening_response(
     """
     participant_id = uuid.UUID(params["participant_id"])
     result = await record_screening_response(
-        session, participant_id, params["trial_id"],
-        params["question_key"], params["answer"],
+        session,
+        participant_id,
+        params["trial_id"],
+        params["question_key"],
+        params["answer"],
         params.get("provenance", "patient_stated"),
     )
     await _log_and_broadcast(
-        session, participant_id, "screening_response_recorded",
+        session,
+        participant_id,
+        "screening_response_recorded",
         {
             "question_key": params["question_key"],
             "answer": params["answer"],
         },
         trial_id=params.get("trial_id"),
     )
+    return result
+
+
+async def _handle_check_availability(
+    session: AsyncSession,
+    params: dict,
+) -> dict:
+    """Handle availability check server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with trial_id, preferred_dates,
+            participant_id.
+
+    Returns:
+        Dict with available slots.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    trial_id = params["trial_id"]
+    raw_dates = params.get("preferred_dates", [])
+    if isinstance(raw_dates, str):
+        preferred_dates = [d.strip() for d in raw_dates.split(",") if d.strip()]
+    else:
+        preferred_dates = raw_dates
+    result = await find_available_slots(
+        session,
+        trial_id,
+        preferred_dates,
+    )
+    await _log_and_broadcast(
+        session,
+        participant_id,
+        "availability_checked",
+        {"slots": result.get("slots", [])},
+        trial_id=trial_id,
+    )
+    return result
+
+
+async def _handle_book_appointment(
+    session: AsyncSession,
+    params: dict,
+) -> dict:
+    """Handle appointment booking server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id,
+            slot_datetime, visit_type.
+
+    Returns:
+        Appointment booking result.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    trial_id = params["trial_id"]
+    slot_dt = datetime.fromisoformat(params["slot_datetime"])
+    result = await book_appointment(
+        session,
+        participant_id,
+        trial_id,
+        slot_dt,
+        params.get("visit_type", "screening"),
+    )
+    if result.get("booked"):
+        await _log_and_broadcast(
+            session,
+            participant_id,
+            "appointment_booked",
+            {
+                "appointment_id": result.get("appointment_id"),
+                "confirmation_due_at": result.get("confirmation_due_at"),
+                "slot_datetime": params["slot_datetime"],
+            },
+            trial_id=trial_id,
+        )
     return result
 
 
@@ -369,16 +462,24 @@ async def _handle_book_transport(
     """
     participant_id = uuid.UUID(params["participant_id"])
     result = await book_transport(
-        session, participant_id,
+        session,
+        participant_id,
         uuid.UUID(params["appointment_id"]),
         params["pickup_address"],
     )
     if result.get("booked"):
+        pickup = params.get("pickup_address", "")
+        zip_code = pickup.split()[-1] if pickup else ""
         await _log_and_broadcast(
-            session, participant_id, "transport_booked",
+            session,
+            participant_id,
+            "transport_booked",
             {
                 "ride_id": result.get("ride_id"),
                 "appointment_id": params["appointment_id"],
+                "pickup_address": result.get("pickup_address", ""),
+                "zip": zip_code,
+                "eta": result.get("scheduled_pickup_at", ""),
             },
             trial_id=params.get("trial_id"),
         )
@@ -402,7 +503,8 @@ async def _handle_safety_check(
     call_sid = params.get("call_sid")
     if not call_sid:
         call_sid = await _resolve_call_sid(
-            session, params.get("_conversation_id"),
+            session,
+            params.get("_conversation_id"),
         )
     result = await run_safety_gate(
         params["response"],
@@ -419,8 +521,11 @@ async def _handle_safety_check(
     }
     if result.triggered:
         await _log_and_broadcast(
-            session, participant_id, "safety_triggered",
-            result_dict, trial_id=params.get("trial_id"),
+            session,
+            participant_id,
+            "safety_triggered",
+            result_dict,
+            trial_id=params.get("trial_id"),
         )
     return result_dict
 
@@ -432,8 +537,13 @@ TOOL_HANDLERS = {
     "check_hard_excludes": _handle_check_hard_excludes,
     "determine_eligibility": _handle_determine_eligibility,
     "record_screening_response": _handle_record_screening_response,
+    "check_availability": _handle_check_availability,
+    "book_appointment": _handle_book_appointment,
     "book_transport": _handle_book_transport,
     "safety_check": _handle_safety_check,
+    # Aliases: ElevenLabs prompt names → existing handlers
+    "record_screening_answer": _handle_record_screening_response,
+    "check_eligibility": _handle_determine_eligibility,
 }
 
 
@@ -503,8 +613,10 @@ async def _trigger_post_call_checks(
         audit = await audit_transcript(session, conversation_id)
         if not audit.get("compliant", True):
             await _log_and_broadcast(
-                session, participant_id,
-                "compliance_gap_detected", audit,
+                session,
+                participant_id,
+                "compliance_gap_detected",
+                audit,
                 trial_id=trial_id,
             )
     except Exception:
@@ -586,7 +698,9 @@ async def handle_call_completion(
     conversation.audio_gcs_path = result.gcs_path
 
     await _trigger_post_call_checks(
-        session, participant_id, payload.trial_id,
+        session,
+        participant_id,
+        payload.trial_id,
         conversation.conversation_id,
     )
 

@@ -67,6 +67,9 @@ class TestBookTransport:
                 "123 Main St, Portland OR 97201",
             )
         assert result["booked"] is True
+        assert result["pickup_address"] == "123 Main St, Portland OR 97201"
+        assert result["dropoff_address"] == "456 Oak Ave"
+        assert "scheduled_pickup_at" in result
 
 
 class TestCheckRideStatus:

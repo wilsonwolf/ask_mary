@@ -7,7 +7,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-CONVAI_API_URL = "https://api.elevenlabs.io/v1/convai/conversations/initiate-outbound-call"
+CONVAI_API_URL = "https://api.elevenlabs.io/v1/convai/twilio/outbound-call"
 
 
 @dataclass
@@ -29,6 +29,8 @@ def build_dynamic_variables(
     trial_name: str,
     site_name: str,
     coordinator_phone: str,
+    participant_id: str = "",
+    trial_id: str = "",
 ) -> dict:
     """Build dynamic variables for ElevenLabs conversation.
 
@@ -37,6 +39,8 @@ def build_dynamic_variables(
         trial_name: Trial display name.
         site_name: Site display name.
         coordinator_phone: Coordinator phone number.
+        participant_id: Participant UUID string.
+        trial_id: Trial identifier string.
 
     Returns:
         Dict of dynamic variable key-value pairs.
@@ -46,6 +50,8 @@ def build_dynamic_variables(
         "trial_name": trial_name,
         "site_name": site_name,
         "coordinator_phone": coordinator_phone,
+        "participant_id": participant_id,
+        "trial_id": trial_id,
     }
 
 
@@ -193,12 +199,15 @@ class ElevenLabsClient:
         payload: dict = {
             "agent_id": self.agent_id,
             "agent_phone_number_id": self.agent_phone_number_id,
-            "customer_number": customer_number,
+            "to_number": customer_number,
         }
+        client_data: dict = {}
         if dynamic_variables:
-            payload["dynamic_variables"] = dynamic_variables
+            client_data["dynamic_variables"] = dynamic_variables
         if config_override:
-            payload["conversation_config_override"] = config_override
+            client_data["conversation_config_override"] = config_override
+        if client_data:
+            payload["conversation_initiation_client_data"] = client_data
         if status_callback:
             payload["status_callback"] = status_callback
             payload["status_callback_method"] = "POST"
@@ -216,11 +225,18 @@ class ElevenLabsClient:
             response.raise_for_status()
             data = response.json()
 
+        conversation_id = data.get(
+            "conversation_id",
+            data.get("callSid", ""),
+        )
         logger.info(
             "outbound_call_initiated",
-            extra={"conversation_id": data.get("conversation_id")},
+            extra={
+                "conversation_id": conversation_id,
+                "call_sid": data.get("callSid"),
+            },
         )
         return CallResult(
-            conversation_id=data["conversation_id"],
+            conversation_id=conversation_id,
             status=data.get("status", "initiated"),
         )

@@ -74,7 +74,19 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
-        """Build async Postgres connection URL via Cloud SQL Auth Proxy."""
+        """Build async Postgres connection URL.
+
+        Uses Unix socket when cloud_sql_instance_connection is set
+        (Cloud Run). Falls back to TCP host:port for local dev.
+        """
+        if self.cloud_sql_instance_connection:
+            socket_path = f"/cloudsql/{self.cloud_sql_instance_connection}"
+            return (
+                f"postgresql+asyncpg://{self.cloud_sql_user}"
+                f":{self.cloud_sql_password}"
+                f"@/{self.cloud_sql_database}"
+                f"?host={socket_path}"
+            )
         return (
             f"postgresql+asyncpg://{self.cloud_sql_user}"
             f":{self.cloud_sql_password}"
@@ -85,6 +97,14 @@ class Settings(BaseSettings):
     @property
     def database_url_sync(self) -> str:
         """Build sync Postgres connection URL (for Alembic migrations)."""
+        if self.cloud_sql_instance_connection:
+            socket_path = f"/cloudsql/{self.cloud_sql_instance_connection}"
+            return (
+                f"postgresql://{self.cloud_sql_user}"
+                f":{self.cloud_sql_password}"
+                f"@/{self.cloud_sql_database}"
+                f"?host={socket_path}"
+            )
         return (
             f"postgresql://{self.cloud_sql_user}"
             f":{self.cloud_sql_password}"

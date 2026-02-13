@@ -366,9 +366,19 @@ class TestDemoConfig:
         finally:
             app.dependency_overrides.clear()
 
-    async def test_returns_error_when_phone_not_configured(self, app) -> None:
-        """Config endpoint returns error when phone not set."""
-        session = _fake_session(MagicMock())
+    async def test_falls_back_to_trial_lookup_when_no_phone(self, app) -> None:
+        """Config endpoint queries by trial when phone not set."""
+        mock_participant = MagicMock()
+        mock_participant.participant_id = uuid.uuid4()
+        mock_participant.first_name = "Eleanor"
+        mock_participant.last_name = "Vasquez"
+        mock_participant.phone = "+15551234567"
+
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = (
+            mock_participant
+        )
+        session = _fake_session(mock_result)
         app.dependency_overrides[get_async_session] = _override_session(session)
 
         try:
@@ -388,7 +398,8 @@ class TestDemoConfig:
 
             assert response.status_code == 200
             data = response.json()
-            assert data["error"] == "demo_participant_phone not configured"
+            assert data["participant_name"] == "Eleanor Vasquez"
+            assert data["trial_id"] == "diabetes-study-a"
         finally:
             app.dependency_overrides.clear()
 
