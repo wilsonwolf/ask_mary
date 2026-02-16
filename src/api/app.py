@@ -1,9 +1,14 @@
 """FastAPI application factory."""
 
+import pathlib
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from src.config.settings import get_settings
+
+FRONTEND_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 
 def create_app() -> FastAPI:
@@ -39,7 +44,26 @@ def create_app() -> FastAPI:
     app.include_router(ws_router)
     app.include_router(worker_router)
 
+    _mount_frontend(app)
+
     return app
+
+
+def _mount_frontend(app: FastAPI) -> None:
+    """Mount the React frontend static files if the dist directory exists.
+
+    Serves index.html as the fallback for client-side routing.
+    Must be mounted last so API routes take priority.
+
+    Args:
+        app: FastAPI application instance.
+    """
+    if FRONTEND_DIR.is_dir():
+        app.mount(
+            "/",
+            StaticFiles(directory=str(FRONTEND_DIR), html=True),
+            name="frontend",
+        )
 
 
 def _health_router() -> "fastapi.routing.APIRouter":

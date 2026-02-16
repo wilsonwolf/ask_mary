@@ -86,29 +86,40 @@ class DtmfWebhookPayload(BaseModel):
 
 @router.post("/elevenlabs/server-tool")
 async def handle_server_tool(
-    request: ServerToolRequest,
+    body: dict,
     session: AsyncSession = Depends(get_async_session),
 ) -> dict:
     """Handle ElevenLabs server tool callbacks.
 
-    Routes tool calls to the appropriate agent helper function.
-    Business-event handlers persist canonical events to the DB
-    and broadcast them via WebSocket.
+    Accepts both our canonical format (tool_name + parameters dict)
+    and ElevenLabs' flat webhook format (tool_name + params at top level).
 
     Args:
-        request: Server tool request payload.
+        body: Raw JSON body from ElevenLabs.
         session: Injected database session.
 
     Returns:
         Tool execution result.
     """
-    tool_name = request.tool_name
-    params = request.parameters
+    tool_name = body.get("tool_name", "")
+    conversation_id = body.get("conversation_id", "")
+
+    # Support both nested (parameters: {}) and flat format
+    if "parameters" in body and isinstance(body["parameters"], dict):
+        params = body["parameters"]
+    else:
+        params = {
+            k: v
+            for k, v in body.items()
+            if k not in ("tool_name", "conversation_id")
+        }
+
     logger.info(
         "server_tool_called",
         extra={
             "tool_name": tool_name,
-            "conversation_id": request.conversation_id,
+            "conversation_id": conversation_id,
+            "param_keys": list(params.keys()),
         },
     )
 
@@ -116,7 +127,7 @@ async def handle_server_tool(
     if handler is None:
         return {"error": f"unknown_tool: {tool_name}"}
 
-    params["_conversation_id"] = request.conversation_id
+    params["_conversation_id"] = conversation_id
     return await handler(session, params)
 
 
@@ -591,6 +602,65 @@ async def _get_or_create_conversation(
     return conversation
 
 
+def _normalize_transcript(raw: object) -> dict:
+    """Normalize transcript into the shape the supervisor expects.
+
+    Converts ElevenLabs list-of-turns format into the canonical
+    ``{"entries": [...]}`` dict format with ``step`` and ``content``
+    keys on each entry.
+
+    Args:
+        raw: Raw transcript — list from ElevenLabs, or already-
+            normalized dict, or None.
+
+    Returns:
+        Dict with ``entries`` list.
+    """
+    if isinstance(raw, dict) and "entries" in raw:
+        return raw
+    if isinstance(raw, list):
+        entries = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            entries.append(
+                {
+                    "step": (
+                        item.get("step") or item.get("role") or item.get("label") or "unknown"
+                    ),
+                    "content": (
+                        item.get("content") or item.get("message") or item.get("text") or ""
+                    ),
+                    **{k: v for k, v in item.items() if k not in ("step", "content")},
+                }
+            )
+        return {"entries": entries}
+    return {"entries": []}
+
+
+async def _fetch_transcript(
+    conversation_id: str,
+) -> list:
+    """Fetch conversation transcript from ElevenLabs API.
+
+    Args:
+        conversation_id: ElevenLabs conversation ID string.
+
+    Returns:
+        List of transcript turn dicts, or empty list on failure.
+    """
+    from src.services.elevenlabs_client import ElevenLabsClient
+
+    settings = get_settings()
+    client = ElevenLabsClient(
+        api_key=settings.elevenlabs_api_key,
+        agent_id=settings.elevenlabs_agent_id,
+        agent_phone_number_id=settings.elevenlabs_agent_phone_number_id,
+    )
+    data = await client.get_conversation(conversation_id)
+    return data.get("transcript", [])
+
+
 async def _trigger_post_call_checks(
     session: AsyncSession,
     participant_id: uuid.UUID,
@@ -672,30 +742,41 @@ async def handle_call_completion(
     participant_id = uuid.UUID(payload.participant_id)
     conversation_id_str = payload.conversation_id
 
-    if not payload.audio_data_base64:
-        return {"uploaded": False, "reason": "no_audio_data"}
-
-    audio_bytes = base64.b64decode(payload.audio_data_base64)
-    settings = get_settings()
-    object_path = build_object_path(
-        payload.trial_id,
-        participant_id,
-        uuid.UUID(conversation_id_str) if len(conversation_id_str) == 36 else uuid.uuid4(),
-    )
-
-    result = await upload_audio(
-        audio_bytes,
-        settings.gcs_audio_bucket,
-        object_path,
-    )
-
     conversation = await _get_or_create_conversation(
         session,
         participant_id,
         conversation_id_str,
         payload.trial_id,
     )
-    conversation.audio_gcs_path = result.gcs_path
+
+    gcs_path = None
+    if payload.audio_data_base64:
+        audio_bytes = base64.b64decode(payload.audio_data_base64)
+        settings = get_settings()
+        object_path = build_object_path(
+            payload.trial_id,
+            participant_id,
+            uuid.UUID(conversation_id_str) if len(conversation_id_str) == 36 else uuid.uuid4(),
+        )
+        result = await upload_audio(
+            audio_bytes,
+            settings.gcs_audio_bucket,
+            object_path,
+        )
+        conversation.audio_gcs_path = result.gcs_path
+        gcs_path = result.gcs_path
+    else:
+        logger.warning(
+            "call_complete_without_audio",
+            extra={
+                "conversation_id": conversation_id_str,
+                "participant_id": str(participant_id),
+                "trial_id": payload.trial_id,
+            },
+        )
+
+    raw_transcript = await _fetch_transcript(conversation_id_str)
+    conversation.full_transcript = _normalize_transcript(raw_transcript)
 
     await _trigger_post_call_checks(
         session,
@@ -705,17 +786,17 @@ async def handle_call_completion(
     )
 
     logger.info(
-        "call_audio_uploaded",
+        "call_completion_processed",
         extra={
             "conversation_id": conversation_id_str,
-            "gcs_path": result.gcs_path,
+            "gcs_path": gcs_path,
+            "had_audio": payload.audio_data_base64 is not None,
         },
     )
 
     return {
-        "uploaded": True,
-        "gcs_path": result.gcs_path,
-        "bucket": result.bucket_name,
+        "uploaded": gcs_path is not None,
+        "gcs_path": gcs_path,
     }
 
 

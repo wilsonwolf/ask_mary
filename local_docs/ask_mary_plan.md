@@ -335,7 +335,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <event_bridge from="Postgres" to="Databricks" method="App-level Pub/Sub publisher (not native CDC — app publishes after each commit)" status="DEFERRED — no Databricks destination yet"/>
     <audio_storage platform="Google Cloud Storage" bucket="ask-mary-audio" access="IAM + signed URLs"/>
     <comms_templates location="repo: comms_templates/*.yaml" format="YAML with Jinja2 variables"/>
-    <frontend generator="Claude Code" framework="React/TypeScript" host="Firebase Hosting" notes="Demo dashboard built by Claude Code with FastAPI WebSocket for real-time updates"/>
+    <frontend generator="Claude Code" framework="React/TypeScript" host="Cloud Run (StaticFiles mount)" notes="Demo dashboard served from same Cloud Run service via FastAPI StaticFiles. Multi-stage Dockerfile (Node build + Python runtime). Firebase deferred to post-hackathon."/>
     <observability primary="Langfuse" secondary="Databricks MLflow"/>
     <deployment platform="Google Cloud Run" containerization="Docker" registry="Artifact Registry"/>
     <job_queue platform="Cloud Tasks" purpose="Timed reminders, slot expiry, re-check scheduling">
@@ -751,7 +751,7 @@ graph LR
             PROD_API["Cloud Run<br/>API (prod)"]
             PROD_WORKER["Cloud Run<br/>Worker (prod)"]
         end
-        FB["Firebase Hosting<br/>(Demo Dashboard)"]
+        FB["Cloud Run<br/>(Dashboard + API)"]
         DB_CLOUD["Databricks<br/>(Cloud)"]
     end
 
@@ -1455,7 +1455,7 @@ on PR to main:
 |---------|------|------|-------------|-------|
 | `ask-mary-api` | Web (Cloud Run) | 8000 | `us-central1` | FastAPI — handles webhooks, REST endpoints. Min instances: 1 (avoid cold start for Twilio webhooks). |
 | `ask-mary-worker` | Worker (Cloud Run) | — | `us-central1` | Background tasks: reminders, Uber booking, audits. Triggered by Cloud Tasks or Pub/Sub. Min instances: 0. **Dedup guard**: every handler checks `task_idempotency_key` against events table before executing — prevents duplicate calls/texts from retries. |
-| `ask-mary-dashboard` | Static (Firebase Hosting) | 443 | Global CDN | React demo dashboard (built by Claude Code). WebSocket connects to ask-mary-api for real-time updates. |
+| `ask-mary-dashboard` | Static (Cloud Run) | 8000 | `us-west2` | React demo dashboard served as static files from the same Cloud Run service via FastAPI StaticFiles mount. Multi-stage Dockerfile (Node build → Python runtime). Eliminates CORS, separate deployment, and base URL config. Firebase Hosting deferred to post-hackathon if CDN scaling is needed. |
 
 **GCP Services Used**:
 | Service | Purpose |
@@ -1467,7 +1467,7 @@ on PR to main:
 | Cloud Build | CI/CD Docker builds |
 | Cloud Tasks | Scheduled reminders, retries, timed slot releases |
 | Pub/Sub | Event bridge: app-level publisher, Postgres → Databricks |
-| Firebase Hosting | Static frontend (dashboard) |
+| ~~Firebase Hosting~~ | ~~Static frontend~~ — MVP serves frontend from Cloud Run instead (see KI-11) |
 | Cloud Logging | Centralized logs |
 | IAM | Service accounts, least-privilege access |
 

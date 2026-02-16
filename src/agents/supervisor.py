@@ -53,7 +53,7 @@ async def audit_transcript(
 
     transcript = conversation.full_transcript or {}
     entries = transcript.get("entries", [])
-    found_steps = {entry["step"] for entry in entries}
+    found_steps = {entry.get("step") for entry in entries if entry.get("step")}
 
     missing_steps = [step for step in REQUIRED_STEPS if step not in found_steps]
 
@@ -113,7 +113,7 @@ def _extract_pre_identity_entries(entries: list[dict]) -> list[dict]:
     """
     pre_identity: list[dict] = []
     for entry in entries:
-        if entry["step"] == "identity_verified":
+        if entry.get("step") == "identity_verified":
             break
         pre_identity.append(entry)
     return pre_identity
@@ -135,7 +135,7 @@ def _scan_entries_for_phi(entries: list[dict]) -> list[dict]:
             if keyword in content:
                 details.append(
                     {
-                        "step": entry["step"],
+                        "step": entry.get("step", "unknown"),
                         "keyword": keyword,
                     }
                 )
@@ -162,7 +162,9 @@ async def detect_answer_inconsistencies(
         Dict with inconsistencies_found bool and flagged_questions list.
     """
     participant_trial = await get_participant_trial(
-        session, participant_id, trial_id,
+        session,
+        participant_id,
+        trial_id,
     )
 
     responses = participant_trial.screening_responses or {}
@@ -211,7 +213,9 @@ async def audit_provenance(
         Dict with all_valid bool and missing_provenance list.
     """
     participant_trial = await get_participant_trial(
-        session, participant_id, trial_id,
+        session,
+        participant_id,
+        trial_id,
     )
 
     responses = participant_trial.screening_responses or {}

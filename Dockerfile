@@ -1,3 +1,11 @@
+FROM node:20-slim AS frontend
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
 FROM python:3.12-slim AS base
 
 WORKDIR /app
@@ -14,6 +22,9 @@ COPY src/ src/
 COPY comms_templates/ comms_templates/
 COPY alembic/ alembic/
 COPY alembic.ini ./
+
+# Copy built frontend from first stage
+COPY --from=frontend /frontend/dist frontend/dist/
 
 EXPOSE 8000
 

@@ -1,7 +1,7 @@
 # Ask Mary — Implementation Tracker
 
 > Auto-updated at the end of each phase by the tracker enforcement hook.
-> Last updated: 2026-02-12 Phase 4/5 in progress.
+> Last updated: 2026-02-13 Phase 4/5 in progress.
 
 ---
 
@@ -218,3 +218,5 @@ Phase 4 deploy → Phase 5 demo validation
 | ElevenLabs tools are separate API resources | Tools must be created via POST /v1/convai/tools first, then attached to agent via PATCH tool_ids. Inline tool definitions on PATCH are silently ignored. | 2026-02-12 |
 | preferred_dates sent as comma-separated string | ElevenLabs sends all tool params as strings. _handle_check_availability parses "2026-03-10,2026-03-11" into a list. | 2026-02-12 |
 | Cloud Run deployed with min-instances=1 | Avoids cold start latency on webhook calls from ElevenLabs. Service URL: ask-mary-1030626458480.us-west2.run.app | 2026-02-12 |
+| Frontend served from Cloud Run (not Firebase) | StaticFiles mount in app.py + multi-stage Dockerfile (Node→Python). Eliminates CORS, separate deployment, and base URL config. See KI-11. | 2026-02-13 |
+| Cloud SQL Unix socket for Cloud Run | settings.py detects CLOUD_SQL_INSTANCE_CONNECTION → builds Unix socket URL. cloudbuild.yaml adds --add-cloudsql-instances. See KI-12 pending fix. | 2026-02-13 |

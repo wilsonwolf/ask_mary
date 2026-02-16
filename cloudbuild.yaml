@@ -33,8 +33,10 @@ steps:
       - '8000'
       - '--add-cloudsql-instances'
       - '${PROJECT_ID}:${_REGION}:ask-mary-db'
-      - '--set-env-vars'
+      - '--update-env-vars'
       - 'CLOUD_SQL_INSTANCE_CONNECTION=${PROJECT_ID}:${_REGION}:ask-mary-db,CLOUD_SQL_DATABASE=ask_mary_dev,CLOUD_SQL_USER=postgres,PUBLIC_BASE_URL=https://ask-mary-1030626458480.${_REGION}.run.app'
+      - '--update-secrets'
+      - 'CLOUD_SQL_PASSWORD=CLOUD_SQL_PASSWORD:latest,ELEVENLABS_API_KEY=ELEVENLABS_API_KEY:latest,ELEVENLABS_AGENT_ID=ELEVENLABS_AGENT_ID:latest,ELEVENLABS_AGENT_PHONE_NUMBER_ID=ELEVENLABS_AGENT_PHONE_NUMBER_ID:latest'
 
 substitutions:
   _REGION: us-west2

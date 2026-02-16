@@ -154,3 +154,62 @@ class TestInitiateOutboundCall:
         assert isinstance(result, CallResult)
         assert result.conversation_id == "conv-abc"
         assert result.status == "initiated"
+
+
+class TestGetConversation:
+    """ElevenLabs get conversation (transcript fetch)."""
+
+    @pytest.fixture
+    def client(self) -> ElevenLabsClient:
+        """Provide an ElevenLabsClient with test config."""
+        return ElevenLabsClient(
+            api_key="test-key",
+            agent_id="test-agent-id",
+            agent_phone_number_id="test-phone-id",
+        )
+
+    async def test_returns_transcript(self, client: ElevenLabsClient) -> None:
+        """get_conversation returns transcript turns."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "conversation_id": "conv-abc",
+            "status": "done",
+            "transcript": [
+                {"role": "agent", "message": "Hello, this is Mary."},
+                {"role": "user", "message": "Hi Mary."},
+            ],
+        }
+
+        with patch("src.services.elevenlabs_client.httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.get.return_value = mock_response
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_cls.return_value = mock_http
+
+            result = await client.get_conversation("conv-abc")
+
+        assert result["transcript"] is not None
+        assert len(result["transcript"]) == 2
+        assert result["transcript"][0]["role"] == "agent"
+
+    async def test_returns_empty_on_error(
+        self,
+        client: ElevenLabsClient,
+    ) -> None:
+        """get_conversation returns empty transcript on HTTP error."""
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_response.raise_for_status.side_effect = Exception("Not found")
+
+        with patch("src.services.elevenlabs_client.httpx.AsyncClient") as mock_cls:
+            mock_http = AsyncMock()
+            mock_http.get.return_value = mock_response
+            mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+            mock_http.__aexit__ = AsyncMock(return_value=False)
+            mock_cls.return_value = mock_http
+
+            result = await client.get_conversation("conv-bad")
+
+        assert result["transcript"] == []

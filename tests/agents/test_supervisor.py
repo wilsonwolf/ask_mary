@@ -77,6 +77,38 @@ class TestAuditTranscript:
         assert result["risk_level"] == "HIGH"
         assert "disclosure" in result["missing_steps"]
 
+    async def test_audit_handles_entries_without_step_key(self) -> None:
+        """Entries missing step key are skipped, not KeyError."""
+        mock_session = AsyncMock()
+        conversation = MagicMock()
+        conversation.full_transcript = {
+            "entries": [
+                {"step": "disclosure", "content": "..."},
+                {"content": "some text without step"},
+                {"step": "consent", "content": "..."},
+                {"step": "identity_verified", "content": "..."},
+            ]
+        }
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = conversation
+        mock_session.execute.return_value = result_mock
+
+        result = await audit_transcript(mock_session, uuid.uuid4())
+        assert result["compliant"] is True
+
+    async def test_audit_handles_empty_transcript(self) -> None:
+        """Empty transcript returns non-compliant without crashing."""
+        mock_session = AsyncMock()
+        conversation = MagicMock()
+        conversation.full_transcript = {"entries": []}
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = conversation
+        mock_session.execute.return_value = result_mock
+
+        result = await audit_transcript(mock_session, uuid.uuid4())
+        assert result["compliant"] is False
+        assert len(result["missing_steps"]) == 3
+
 
 class TestCheckPhiLeak:
     """PHI leak detection in transcripts."""
@@ -131,6 +163,24 @@ class TestCheckPhiLeak:
         result = await check_phi_leak(mock_session, uuid.uuid4())
         assert result["phi_leaked"] is False
         assert result["details"] == []
+
+    async def test_phi_leak_handles_entries_without_step(self) -> None:
+        """Entries missing step key don't crash PHI scan."""
+        mock_session = AsyncMock()
+        conversation = MagicMock()
+        conversation.full_transcript = {
+            "entries": [
+                {"content": "discussed date of birth details"},
+                {"step": "identity_verified", "content": "ok"},
+            ]
+        }
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = conversation
+        mock_session.execute.return_value = result_mock
+
+        result = await check_phi_leak(mock_session, uuid.uuid4())
+        assert result["phi_leaked"] is True
+        assert len(result["details"]) > 0
 
 
 class TestDetectAnswerInconsistencies:

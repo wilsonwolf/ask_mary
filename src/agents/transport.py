@@ -13,13 +13,11 @@ wired to the helpers at runtime by the orchestrator.
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
-from src.db.models import Appointment, Ride
-from src.db.postgres import create_ride, get_participant_by_id
+from src.db.postgres import create_ride, get_appointment, get_participant_by_id, get_ride
 
 
 async def confirm_pickup_address(
@@ -70,12 +68,9 @@ async def book_transport(
     Returns:
         Dict confirming ride booking.
     """
-    result = await session.execute(
-        select(Appointment).where(
-            Appointment.appointment_id == appointment_id,
-        )
-    )
-    appointment = result.scalar_one_or_none()
+    appointment = await get_appointment(session, appointment_id)
+    if appointment is None:
+        return {"error": "appointment_not_found"}
     pickup_time = appointment.scheduled_at - timedelta(hours=1)
 
     dropoff = appointment.site_address or ""
@@ -109,8 +104,7 @@ async def check_ride_status(
     Returns:
         Dict with ride status.
     """
-    result = await session.execute(select(Ride).where(Ride.ride_id == ride_id))
-    ride = result.scalar_one_or_none()
+    ride = await get_ride(session, ride_id)
     if ride is None:
         return {"error": "ride_not_found"}
     return {

@@ -262,6 +262,46 @@ async def create_ride(
     return ride
 
 
+async def get_appointment(
+    session: AsyncSession,
+    appointment_id: uuid.UUID,
+) -> Appointment | None:
+    """Look up an appointment by UUID.
+
+    Args:
+        session: Active database session.
+        appointment_id: Appointment UUID.
+
+    Returns:
+        Appointment if found, else None.
+    """
+    result = await session.execute(
+        select(Appointment).where(
+            Appointment.appointment_id == appointment_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_ride(
+    session: AsyncSession,
+    ride_id: uuid.UUID,
+) -> Ride | None:
+    """Look up a ride by UUID.
+
+    Args:
+        session: Active database session.
+        ride_id: Ride UUID.
+
+    Returns:
+        Ride if found, else None.
+    """
+    result = await session.execute(
+        select(Ride).where(Ride.ride_id == ride_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_participant_trial(
     session: AsyncSession,
     participant_id: uuid.UUID,

@@ -1,6 +1,6 @@
 # Ask Mary — Known Issues
 
-> Last updated: 2026-02-12 (Phase 4/5 in progress)
+> Last updated: 2026-02-13 (Phase 4/5 in progress)
 
 ---
 
@@ -80,6 +80,17 @@
   - **Option B: Hybrid with external safety loop** — Keep ElevenLabs as orchestrator. Add pipeline state tracking + agent reasoning logging to webhook handlers. Use WebSocket monitoring feed to run an external supervisor agent (OpenAI) in parallel. Trigger adversarial recheck via Cloud Tasks post-call.
   - **Option C: Custom LLM integration** — Route ElevenLabs through a custom LLM endpoint that wraps OpenAI orchestrator. Full pipeline control, but highest complexity and latency.
 - **Action needed**: Architecture review to decide which option. The goal is ensuring safety checks and balances are enforced at the backend level, not just relied upon in the ElevenLabs prompt.
+
+### [Resolved] KI-12: Conversation transcripts never populated (breaks supervisor audit)
+- **Fixed in**: Phase 5 findings round
+- **Description**: `Conversation.full_transcript` was never written to. Added `ElevenLabsClient.get_conversation()` method (calls `GET /v1/convai/conversations/{id}`) and `_fetch_transcript()` helper in webhooks.py. `handle_call_completion()` now fetches and stores the transcript in `full_transcript` JSONB before running `_trigger_post_call_checks()`. The supervisor's `audit_transcript()` can now inspect real conversation data.
+
+### KI-11: Frontend served from Cloud Run (not Firebase Hosting)
+- **Severity**: Low (architectural simplification)
+- **Files**: `src/api/app.py`, `Dockerfile`
+- **Description**: The original plan called for deploying the React frontend to Firebase Hosting separately. For MVP simplicity, the frontend is instead served as static files from the same Cloud Run service via FastAPI's `StaticFiles` mount. This eliminates CORS complexity, a second deployment target, and API base URL configuration. The Dockerfile uses a multi-stage build (Node for frontend, Python for backend). Relative API paths (`/api/...`) and WebSocket URLs (`/ws/events`) work automatically since everything is on the same origin.
+- **Trade-off**: Frontend and backend must deploy together. For production, separating them (Firebase Hosting + CDN for static assets, Cloud Run for API) would improve caching and reduce backend load.
+- **Action needed**: None for MVP. Revisit post-hackathon if scaling requires CDN for static assets.
 
 ### KI-9: 22 pre-existing ruff lint warnings
 - **Severity**: Low (code quality)

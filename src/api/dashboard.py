@@ -22,9 +22,10 @@ from src.db.models import (
     HandoffQueue,
     Participant,
     ParticipantTrial,
-    Trial,
 )
+from src.db.postgres import get_participant_by_id
 from src.db.session import get_async_session
+from src.db.trials import get_trial
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +82,9 @@ async def get_participant(
     Returns:
         Participant detail dict with trials.
     """
-    result = await session.execute(
-        select(Participant).where(
-            Participant.participant_id == uuid.UUID(participant_id),
-        )
+    participant = await get_participant_by_id(
+        session, uuid.UUID(participant_id),
     )
-    participant = result.scalars().first()
     if participant is None:
         return {"error": "not_found"}
     detail = _serialize_participant(participant)
@@ -237,8 +235,7 @@ async def update_trial_coordinator(
     Returns:
         Updated trial coordinator info.
     """
-    result = await session.execute(select(Trial).where(Trial.trial_id == trial_id))
-    trial = result.scalars().first()
+    trial = await get_trial(session, trial_id)
     if trial is None:
         return {"error": "trial_not_found"}
 
@@ -322,12 +319,7 @@ async def start_demo_call(
         Call initiation result with conversation_id.
     """
     participant_uuid = uuid.UUID(request.participant_id)
-    result = await session.execute(
-        select(Participant).where(
-            Participant.participant_id == participant_uuid,
-        )
-    )
-    participant = result.scalars().first()
+    participant = await get_participant_by_id(session, participant_uuid)
     if participant is None:
         return {"error": "participant_not_found"}
 
@@ -402,8 +394,7 @@ async def _call_elevenlabs(
         build_system_prompt,
     )
 
-    trial_result = await session.execute(select(Trial).where(Trial.trial_id == trial_id))
-    trial = trial_result.scalars().first()
+    trial = await get_trial(session, trial_id)
     if trial is None:
         return {"error": "trial_not_found"}
 

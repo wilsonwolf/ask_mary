@@ -8,6 +8,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 CONVAI_API_URL = "https://api.elevenlabs.io/v1/convai/twilio/outbound-call"
+CONVAI_CONVERSATION_URL = "https://api.elevenlabs.io/v1/convai/conversations"
 
 
 @dataclass
@@ -87,12 +88,38 @@ def build_system_prompt(
         f"INCLUSION CRITERIA:\n{inclusion_text}\n\n"
         f"EXCLUSION CRITERIA:\n{exclusion_text}\n\n"
         f"VISIT SCHEDULE:\n{visits_text}\n\n"
+        f"CONVERSATION FLOW:\n"
+        f"1. DISCLOSE: Tell the participant you are an automated AI "
+        f"assistant and that the call may be recorded.\n"
+        f"2. CONSENT: Ask for explicit consent to continue. If they "
+        f"refuse, end the call politely.\n"
+        f"3. VERIFY IDENTITY: Ask for their year of birth (4 digits) "
+        f"and ZIP code (5 digits). You MUST call the verify_identity "
+        f"tool with these values. Do NOT proceed until the tool "
+        f"returns verified=true.\n"
+        f"4. SCREENING: For each inclusion/exclusion criterion, ask "
+        f"the relevant question. After each answer, call the "
+        f"record_screening_answer tool. When all questions are asked, "
+        f"call check_eligibility.\n"
+        f"5. SCHEDULING: If eligible, call check_availability to find "
+        f"open slots. Offer the participant dates. When they choose, "
+        f"call book_appointment.\n"
+        f"6. TRANSPORT: Ask if they need a ride. If yes, confirm their "
+        f"pickup address and call book_transport.\n\n"
+        f"TOOL USAGE — MANDATORY:\n"
+        f"- You have server tools available. You MUST call them — do "
+        f"NOT try to handle verification, screening, scheduling, or "
+        f"booking conversationally.\n"
+        f"- verify_identity: call after collecting DOB year and ZIP\n"
+        f"- record_screening_answer: call after each screening answer\n"
+        f"- check_eligibility: call after all screening answers\n"
+        f"- check_availability: call to find open appointment slots\n"
+        f"- book_appointment: call when participant picks a slot\n"
+        f"- book_transport: call when participant needs a ride\n"
+        f"- safety_check: call if participant mentions symptoms or "
+        f"distress\n\n"
         f"RULES:\n"
-        f"- You MUST disclose that you are an automated assistant "
-        f"and that the call may be recorded.\n"
-        f"- You MUST get explicit consent to continue.\n"
-        f"- You MUST verify identity (DOB year + ZIP) before "
-        f"sharing any trial details.\n"
+        f"- NEVER share trial details before identity is verified.\n"
         f"- NEVER give medical advice.\n"
         f"- If the participant reports symptoms or distress, "
         f"transfer to coordinator at {coordinator_phone}.\n"
@@ -240,3 +267,35 @@ class ElevenLabsClient:
             conversation_id=conversation_id,
             status=data.get("status", "initiated"),
         )
+
+    async def get_conversation(
+        self,
+        conversation_id: str,
+    ) -> dict:
+        """Fetch conversation details including transcript.
+
+        Calls GET /v1/convai/conversations/{conversation_id} to
+        retrieve the full transcript after a call completes.
+
+        Args:
+            conversation_id: ElevenLabs conversation ID.
+
+        Returns:
+            Dict with transcript and conversation metadata.
+        """
+        url = f"{CONVAI_CONVERSATION_URL}/{conversation_id}"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url,
+                    headers={"xi-api-key": self.api_key},
+                    timeout=15.0,
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception:
+            logger.warning(
+                "get_conversation_failed",
+                extra={"conversation_id": conversation_id},
+            )
+            return {"conversation_id": conversation_id, "transcript": []}

@@ -71,6 +71,19 @@ class TestBookTransport:
         assert result["dropoff_address"] == "456 Oak Ave"
         assert "scheduled_pickup_at" in result
 
+    async def test_returns_error_when_appointment_not_found(self) -> None:
+        """Returns error when appointment does not exist."""
+        mock_session = AsyncMock()
+
+        with patch("src.agents.transport.get_appointment", return_value=None):
+            result = await book_transport(
+                mock_session,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "123 Main St, Portland OR 97201",
+            )
+        assert result == {"error": "appointment_not_found"}
+
 
 class TestCheckRideStatus:
     """Ride status check."""

@@ -44,14 +44,17 @@ class TestServerToolEndpoint:
         participant_id = str(uuid.uuid4())
         mock_result = {"verified": True, "attempts": 1}
 
-        with patch(
-            "src.api.webhooks.verify_identity",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ), patch(
-            "src.api.webhooks.log_event",
-            new_callable=AsyncMock,
-            return_value=None,
+        with (
+            patch(
+                "src.api.webhooks.verify_identity",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -81,18 +84,22 @@ class TestServerToolEndpoint:
         mock_result.trigger_type = "severe_symptoms"
         mock_result.severity = "HANDOFF_NOW"
 
-        with patch(
-            "src.api.webhooks.run_safety_gate",
-            new_callable=AsyncMock,
-            return_value=mock_result,
-        ), patch(
-            "src.api.webhooks.log_event",
-            new_callable=AsyncMock,
-            return_value=None,
-        ), patch(
-            "src.api.webhooks._resolve_call_sid",
-            new_callable=AsyncMock,
-            return_value=None,
+        with (
+            patch(
+                "src.api.webhooks.run_safety_gate",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks._resolve_call_sid",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -232,6 +239,61 @@ class TestDtmfEndpoint:
         assert data["verified"] is True
 
 
+class TestNormalizeTranscript:
+    """Transcript normalization for supervisor compatibility."""
+
+    def test_normalizes_list_to_entries_dict(self) -> None:
+        """List of ElevenLabs turns becomes {entries: [...]}."""
+        from src.api.webhooks import _normalize_transcript
+
+        raw = [
+            {"role": "agent", "message": "Hello, this is Mary."},
+            {"role": "user", "message": "Hi Mary."},
+        ]
+        result = _normalize_transcript(raw)
+        assert isinstance(result, dict)
+        assert "entries" in result
+        assert len(result["entries"]) == 2
+        for entry in result["entries"]:
+            assert "step" in entry
+            assert "content" in entry
+
+    def test_preserves_already_normalized(self) -> None:
+        """Already-normalized dict passes through unchanged."""
+        from src.api.webhooks import _normalize_transcript
+
+        raw = {
+            "entries": [
+                {"step": "disclosure", "content": "I am an automated assistant."},
+            ]
+        }
+        result = _normalize_transcript(raw)
+        assert result == raw
+
+    def test_handles_empty_list(self) -> None:
+        """Empty list returns empty entries."""
+        from src.api.webhooks import _normalize_transcript
+
+        result = _normalize_transcript([])
+        assert result == {"entries": []}
+
+    def test_handles_none(self) -> None:
+        """None returns empty entries."""
+        from src.api.webhooks import _normalize_transcript
+
+        result = _normalize_transcript(None)
+        assert result == {"entries": []}
+
+    def test_maps_role_to_step(self) -> None:
+        """ElevenLabs role field maps to step."""
+        from src.api.webhooks import _normalize_transcript
+
+        raw = [{"role": "agent", "message": "Disclosure: I am AI."}]
+        result = _normalize_transcript(raw)
+        assert result["entries"][0]["step"] == "agent"
+        assert result["entries"][0]["content"] == "Disclosure: I am AI."
+
+
 class TestCallCompletionEndpoint:
     """ElevenLabs call completion webhook."""
 
@@ -326,24 +388,87 @@ class TestCallCompletionEndpoint:
         mock_get_or_create.assert_called_once()
         assert mock_conversation.audio_gcs_path == "trial-1/pid/cid.wav"
 
-    async def test_no_audio_returns_not_uploaded(self, app) -> None:
-        """Returns uploaded=False when no audio data provided."""
-        transport = ASGITransport(app=app)
-        async with AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            response = await client.post(
-                "/webhooks/elevenlabs/call-complete",
-                json={
-                    "conversation_id": str(uuid.uuid4()),
-                    "participant_id": str(uuid.uuid4()),
-                    "trial_id": "trial-1",
-                },
-            )
+    async def test_fetches_and_stores_transcript(self, app) -> None:
+        """Fetches transcript from ElevenLabs and stores on conversation."""
+        mock_conversation = MagicMock()
+        mock_conversation.conversation_id = uuid.uuid4()
+        mock_conversation.full_transcript = None
+
+        fake_transcript = [
+            {"role": "agent", "message": "Hello, this is Mary."},
+            {"role": "user", "message": "Hi Mary."},
+        ]
+
+        with (
+            patch(
+                "src.api.webhooks._get_or_create_conversation",
+                new_callable=AsyncMock,
+                return_value=mock_conversation,
+            ),
+            patch(
+                "src.api.webhooks._fetch_transcript",
+                new_callable=AsyncMock,
+                return_value=fake_transcript,
+            ) as mock_fetch,
+            patch(
+                "src.api.webhooks._trigger_post_call_checks",
+                new_callable=AsyncMock,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/call-complete",
+                    json={
+                        "conversation_id": "conv-abc-123",
+                        "participant_id": str(uuid.uuid4()),
+                        "trial_id": "trial-1",
+                    },
+                )
+        assert response.status_code == 200
+        mock_fetch.assert_called_once_with("conv-abc-123")
+        stored = mock_conversation.full_transcript
+        assert isinstance(stored, dict)
+        assert "entries" in stored
+        assert len(stored["entries"]) == 2
+        assert stored["entries"][0]["content"] == "Hello, this is Mary."
+
+    async def test_no_audio_still_runs_post_call_checks(self, app) -> None:
+        """Returns uploaded=False but still triggers post-call checks."""
+        mock_conversation = MagicMock()
+        mock_conversation.conversation_id = uuid.uuid4()
+
+        with (
+            patch(
+                "src.api.webhooks._get_or_create_conversation",
+                new_callable=AsyncMock,
+                return_value=mock_conversation,
+            ),
+            patch(
+                "src.api.webhooks._trigger_post_call_checks",
+                new_callable=AsyncMock,
+            ) as mock_checks,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/call-complete",
+                    json={
+                        "conversation_id": str(uuid.uuid4()),
+                        "participant_id": str(uuid.uuid4()),
+                        "trial_id": "trial-1",
+                    },
+                )
         assert response.status_code == 200
         data = response.json()
         assert data["uploaded"] is False
+        mock_checks.assert_called_once()
 
 
 class TestSignedUrlEndpoint:
