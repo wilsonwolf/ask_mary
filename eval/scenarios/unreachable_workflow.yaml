@@ -1,0 +1,18 @@
+scenario: unreachable_workflow
+description: "Placeholder -- participant unreachable across channels, escalation workflow"
+participant:
+  first_name: Grace
+  last_name: Hopper
+  dob: "1960-12-09"
+  zip: "06510"
+  distance_km: 12.0
+  phone: "+12035552222"
+trial_id: "oncology-trial-d"
+steps:
+  - action: placeholder
+    module: src.agents.outreach
+    params: {}
+    expect:
+      placeholder: true
+failure_criteria:
+  not_implemented: true

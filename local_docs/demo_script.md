@@ -8,9 +8,9 @@
 
 ## Physical Setup
 
-- **Your phone** is the participant
+- **Your phone** (+1-650-507-7348) is the participant
 - **Laptop** connected to projector/TV shows the dashboard
-- A **Twilio phone number** is the caller ID (the "clinic line")
+- A **Twilio phone number** is the caller ID (the "clinic line"), configured in env vars
 - A **"Start Demo Call"** button on the dashboard initiates an outbound call
 
 ---
@@ -76,7 +76,7 @@ Your phone rings. Caller ID shows the Twilio number.
 You answer on speaker.
 
 **Mary (voice):**
-> "Hi, I'm Mary, an automated assistant calling on behalf of Valley Research. This call may be recorded for documentation. Press 1 to continue, or press 2 to stop."
+> "Hi, I'm Mary, an automated assistant calling on behalf of OHSU Knight Clinical Research. This call may be recorded for documentation. Press 1 to continue, or press 2 to stop."
 
 You press **1**.
 
@@ -98,11 +98,11 @@ You press **1980**.
 **Mary:**
 > "Thank you. Now enter your ZIP code."
 
-You press **94107**.
+You press **97201**.
 
 **Dashboard updates:**
 - `verified_identity = true`
-- Participant card fills in: DOB year: 1980, ZIP: 94107, timezone: America/Los_Angeles
+- Participant card fills in: DOB year: 1980, ZIP: 97201, timezone: America/Los_Angeles
 - Events feed: `IDENTITY_YEAR_COLLECTED`, `ZIP_COLLECTED`, `IDENTITY_VERIFIED`
 
 ---
@@ -110,24 +110,24 @@ You press **94107**.
 ### 22-35 seconds: Pre-screen eligibility (hard excludes only)
 
 **Mary:**
-> "Quick eligibility check. Press 1 for Yes, 2 for No. Have you been diagnosed with Type 2 diabetes?"
+> "I have a few quick eligibility questions. Have you been diagnosed with Type 2 diabetes?"
 
-You press **1**.
-
-**Mary:**
-> "Are you currently pregnant?"
-
-You press **2**.
+You say: **"Yes."**
 
 **Mary:**
-> "Are you currently taking insulin? Press 1 for Yes, 2 for No."
+> "Are you currently pregnant or nursing?"
 
-You press **2**.
+You say: **"No."**
+
+**Mary:**
+> "Are you currently taking insulin?"
+
+You say: **"No."**
 
 **Dashboard updates:**
-- Eligibility panel shows answers as captured
+- Eligibility panel shows answers as captured via ElevenLabs server tools
 - Eligibility status: `Screening → Eligible`
-- Events feed: `SCREEN_Q1=yes`, `SCREEN_Q2=no`, `ELIGIBILITY=ELIGIBLE`
+- Events feed: `SCREEN_Q1=yes`, `SCREEN_Q2=no`, `SCREEN_Q3=no`, `ELIGIBILITY=ELIGIBLE`
 
 ---
 
@@ -156,7 +156,7 @@ You press **1**.
 ### 50-60 seconds: Teach-back confirmation + transport booking
 
 **Mary:**
-> "Booked. Your appointment is Tuesday at 10 AM at Valley Research Clinic. Press 1 to confirm these details, or press 2 to reschedule."
+> "Booked. Your appointment is Tuesday at 10 AM at OHSU Knight Clinical Research Center. Press 1 to confirm these details, or press 2 to reschedule."
 
 You press **1**.
 

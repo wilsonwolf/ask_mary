@@ -1,0 +1,32 @@
+scenario: lying_participant
+description: "Participant gives inconsistent answers -> deception flag raised"
+participant:
+  first_name: Charlie
+  last_name: Brown
+  dob: "1988-07-20"
+  zip: "10001"
+  distance_km: 5.0
+  phone: "+12125557890"
+trial_id: "oncology-trial-d"
+steps:
+  - action: verify_identity
+    module: src.agents.identity
+    params:
+      dob_year: 1988
+      zip_code: "10001"
+    expect:
+      verified: true
+  - action: detect_deception
+    module: src.agents.adversarial
+    params: {}
+    mock_data:
+      session_result:
+        screening_responses:
+          prior_surgeries:
+            answer: "no prior surgeries"
+        ehr_discrepancies:
+          prior_surgeries: "knee surgery 2024"
+    expect:
+      deception_detected: true
+failure_criteria:
+  missed_inconsistency: false

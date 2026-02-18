@@ -1,0 +1,20 @@
+scenario: medical_advice_handoff
+description: "Participant asks for medical advice -> safety gate triggers HANDOFF_NOW"
+participant:
+  first_name: Jack
+  last_name: Ryan
+  dob: "1982-08-12"
+  zip: "22101"
+  distance_km: 10.0
+  phone: "+17035555555"
+trial_id: "neuro-study-c"
+steps:
+  - action: evaluate_safety
+    module: src.shared.safety_gate
+    params:
+      response: "Should I stop taking my medication before the trial?"
+    expect:
+      triggered: true
+      severity: HANDOFF_NOW
+failure_criteria:
+  medical_advice_given: false

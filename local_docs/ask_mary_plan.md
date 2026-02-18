@@ -40,14 +40,14 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <constraint id="C2">Must be cloud-hosted from the start (not localhost-only)</constraint>
     <constraint id="C3">Multi-agent architecture for safety-critical checking</constraint>
     <constraint id="C4">Python preferred; other languages only if strictly superior</constraint>
-    <constraint id="C5">Hybrid data layer: Cloud SQL (Postgres) for operational/transactional state; Databricks (Delta Lake) for analytics, EHR, trial metadata, ML, and reporting</constraint>
+    <constraint id="C5">Hybrid data layer: Cloud SQL (Postgres) for operational/transactional state + interim trial reference data; Databricks (Delta Lake) for analytics, EHR, ML, and reporting (deferred — set up after hackathon)</constraint>
     <constraint id="C6">Must support autonomous maintenance by agent coding tools</constraint>
     <constraint id="C7">Git worktree usage, prod/dev separation, gradual deployment</constraint>
   </constraints>
 
   <available_credits>
     <service name="ElevenLabs" use="Voice agent — real-time conversational AI + Twilio phone integration"/>
-    <service name="Databricks" use="Analytics DB (Delta Lake), EHR data, trial metadata, MLflow observability, transcript analysis"/>
+    <service name="Databricks" use="Analytics DB (Delta Lake), EHR data, MLflow observability, transcript analysis — DEFERRED until after hackathon; trial metadata stored in interim Postgres trials table"/>
     <service name="Google Cloud" use="Cloud Run (compute), Cloud SQL Postgres (operational DB), Cloud Tasks (job queue), Artifact Registry, Secret Manager"/>
     <service name="Claude Code" use="Primary dev tool — implementation, planning, iteration, demo dashboard (React/TS + FastAPI WebSocket)"/>
     <service name="Cursor" use="IDE for rapid development"/>
@@ -62,7 +62,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         durations, buffers, hours). Comms templates stored as config files in repo
         (disclosure, prep, confirm, day-of, rescue, protocol-change broadcast).
       </description>
-      <data_sources>trials table (Databricks — reference), comms_templates/ config dir (repo)</data_sources>
+      <data_sources>trials table (Postgres — interim; Databricks post-hackathon), comms_templates/ config dir (repo)</data_sources>
     </step>
 
     <step id="S1" name="outreach_and_consent">
@@ -77,9 +77,25 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         Mention transport support early to increase conversion.
         Retry cadence: Voice #1 → SMS nudge → Voice #2 (diff time) → Voice #3 + final SMS.
         Log each attempt + outcome in events table.
+
+        PRE-CALL CONTEXT ASSEMBLY (before every outbound voice call):
+        Before initiating the Twilio/ElevenLabs call, the outreach agent assembles
+        per-call context by loading participant data (Postgres) and trial criteria
+        (Postgres trials table (interim; Databricks post-hackathon): inclusion_criteria, exclusion_criteria, trial_name,
+        site_name, coordinator_phone, visit_templates). This context is injected into
+        the ElevenLabs conversation via two mechanisms:
+        (1) Dynamic Variables — {{participant_name}}, {{trial_name}}, {{site_name}},
+            {{coordinator_phone}} — injected as template variables in the agent prompt.
+        (2) Overrides (conversation_config_override) — the system prompt and first_message
+            are overridden per-call with trial-specific inclusion/exclusion criteria and
+            participant-specific context. Overrides must be enabled in the ElevenLabs
+            agent Security settings.
+        The assembled context is passed via the ElevenLabs outbound call API.
+        This ensures the voice agent knows WHO it is calling, WHICH trial, and WHAT
+        the screening criteria are — without hardcoding any trial-specific logic.
       </description>
       <agents>outreach_agent</agents>
-      <apis>ElevenLabs Conversational AI, Twilio (SMS/WhatsApp/Voice)</apis>
+      <apis>ElevenLabs Conversational AI (dynamic variables + overrides), Twilio (SMS/WhatsApp/Voice)</apis>
       <gates>
         <gate id="G1" name="disclosure" required="true">
           Voice: "automated assistant" + "may be recorded" + "OK to continue?"
@@ -135,7 +151,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         Ineligible: neutral close, ask permission for future trials, apply DNC if requested.
       </description>
       <agents>screening_agent</agents>
-      <data_sources>trials (Databricks), participant_ehr (Databricks), participants (Postgres)</data_sources>
+      <data_sources>trials (Postgres interim; Databricks post-hackathon), participants (Postgres). EHR cross-reference deferred — MVP uses participant-stated responses only (provenance: patient_stated).</data_sources>
       <provenance>patient_stated | ehr | coordinator | system</provenance>
     </step>
 
@@ -183,7 +199,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
         Full status: BOOKED → CONFIRMED → COMPLETED | NO_SHOW | CANCELLED.
       </description>
       <agents>scheduling_agent</agents>
-      <apis>Google Calendar API (MCP server)</apis>
+      <apis>Postgres slot management (MVP), Google Calendar API (post-hackathon)</apis>
     </step>
 
     <step id="S6" name="transportation_closed_loop">
@@ -264,9 +280,20 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <agent name="orchestrator" role="Central coordinator — routes conversations, enforces gate sequence">
       <sdk>OpenAI Agents SDK (handoff pattern)</sdk>
     </agent>
-    <agent name="outreach_agent" role="Initiates contact, enforces DNC, manages retry cadence">
+    <agent name="outreach_agent" role="Initiates contact, enforces DNC, manages retry cadence, assembles per-call context">
       <sdk>OpenAI Agents SDK</sdk>
-      <tools>Twilio, ElevenLabs</tools>
+      <tools>Twilio, ElevenLabs (outbound call API with dynamic_variables + conversation_config_override)</tools>
+      <pre_call_context>
+        Before each outbound call:
+        1. Load participant record from Postgres (name, phone, address, language, trial enrollment)
+        2. Load trial criteria via TrialRepository (Postgres interim; Databricks post-hackathon):
+           inclusion_criteria, exclusion_criteria, trial_name, site_name, coordinator_phone,
+           visit_templates, max_distance_km
+        3. Assemble dynamic_variables dict: participant_name, trial_name, site_name, coordinator_phone
+        4. Build conversation_config_override: system prompt with trial criteria + participant context,
+           first_message personalized with participant name + trial name
+        5. Initiate ElevenLabs outbound call via API with assembled context
+      </pre_call_context>
     </agent>
     <agent name="identity_agent" role="Verifies identity (DOB+ZIP), detects duplicates/wrong-person">
       <sdk>OpenAI Agents SDK</sdk>
@@ -279,7 +306,7 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     </agent>
     <agent name="scheduling_agent" role="Geo gate, slot booking, 12h confirmation window, teach-back">
       <sdk>OpenAI Agents SDK</sdk>
-      <tools>Google Calendar MCP</tools>
+      <tools>Postgres slot management (MVP); Google Calendar MCP (post-hackathon)</tools>
     </agent>
     <agent name="transport_agent" role="Uber ride booking, pickup verification, day-of exception handling">
       <sdk>OpenAI Agents SDK</sdk>
@@ -301,13 +328,14 @@ This is the master prompt that can be fed to any agent coding tool (Claude Code,
     <backend language="python" framework="FastAPI" agent_sdk="OpenAI Agents SDK"/>
     <voice platform="ElevenLabs Conversational AI 2.0" telephony="Twilio"/>
     <database_operational platform="Cloud SQL (Postgres)" connector="asyncpg + SQLAlchemy"
-      purpose="Transactional state: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides"/>
+      purpose="Transactional state: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides + interim trials table (reference data via TrialRepository)"/>
     <database_analytics platform="Databricks" format="Delta Lake" connector="databricks-sql-connector"
-      purpose="Analytics: trials (ref), participant_ehr, conversation_transcripts, audit_log, ML models"/>
-    <event_bridge from="Postgres" to="Databricks" method="App-level Pub/Sub publisher (not native CDC — app publishes after each commit)"/>
+      purpose="Analytics: participant_ehr, conversation_transcripts, audit_log, ML models — DEFERRED until after hackathon. Trials table migrates here from Postgres when ready."
+      status="DEFERRED"/>
+    <event_bridge from="Postgres" to="Databricks" method="App-level Pub/Sub publisher (not native CDC — app publishes after each commit)" status="DEFERRED — no Databricks destination yet"/>
     <audio_storage platform="Google Cloud Storage" bucket="ask-mary-audio" access="IAM + signed URLs"/>
     <comms_templates location="repo: comms_templates/*.yaml" format="YAML with Jinja2 variables"/>
-    <frontend generator="Claude Code" framework="React/TypeScript" host="Firebase Hosting" notes="Demo dashboard built by Claude Code with FastAPI WebSocket for real-time updates"/>
+    <frontend generator="Claude Code" framework="React/TypeScript" host="Cloud Run (StaticFiles mount)" notes="Demo dashboard served from same Cloud Run service via FastAPI StaticFiles. Multi-stage Dockerfile (Node build + Python runtime). Firebase deferred to post-hackathon."/>
     <observability primary="Langfuse" secondary="Databricks MLflow"/>
     <deployment platform="Google Cloud Run" containerization="Docker" registry="Artifact Registry"/>
     <job_queue platform="Cloud Tasks" purpose="Timed reminders, slot expiry, re-check scheduling">
@@ -365,8 +393,9 @@ Clinical trial recruitment suffers from high participant dropout, scheduling fri
 | P0 | Identity verification — DOB + ZIP, wrong-person handling (S2) | Must have |
 | P0 | Eligibility screening with criteria matching + EHR cross-reference (S3) | Must have |
 | P0 | Safety gate — blocking pre-check on every response with handoff triggers (S3.5) | Must have |
-| P0 | Geo/distance gate + appointment scheduling with Google Calendar (S5) | Must have |
+| P0 | Geo/distance gate + appointment scheduling via Postgres slot management (S5) | Must have |
 | P0 | 12-hour confirmation window (BOOKED → CONFIRMED flow) | Must have |
+| P2 | Google Calendar integration for coordinator visibility + external calendar sync | Nice to have (post-hackathon) |
 | P0 | Event-driven comms cadence — prep, confirm, day-of, no-show rescue (S7) | Must have |
 | P0 | Append-only events log with provenance + idempotency keys | Must have |
 | P0 | Handoff queue with severity routing + SLA tracking (S8) | Must have |
@@ -425,13 +454,14 @@ graph TB
     end
 
     subgraph "External Services"
-        GCAL["Google Calendar<br/>(MCP Server)"]
+        GCAL["Google Calendar<br/>(MCP Server)<br/>⚠️ POST-HACKATHON"]
         UBER["Uber Health<br/>API (mock)"]
     end
 
     subgraph "Operational DB (Cloud SQL Postgres)"
         PG_PARTS["participants"]
         PG_PT["participant_trials"]
+        PG_TRIALS["trials<br/>(interim reference —<br/>moves to Databricks<br/>post-hackathon)"]
         PG_APPTS["appointments"]
         PG_CONVOS["conversations<br/>(+ full transcripts)"]
         PG_REASON["agent_reasoning"]
@@ -444,12 +474,12 @@ graph TB
         GCS["GCS Bucket<br/>(call recordings,<br/>IAM + signed URLs)"]
     end
 
-    subgraph "Analytics DB (Databricks Delta Lake)"
-        DB_TRIALS["trials<br/>(reference)"]
-        DB_EHR["participant_ehr<br/>(source data)"]
-        DB_ARCHIVE["conversations_archive<br/>(ML analysis)"]
-        DB_AUDIT["audit_log"]
-        DB_ANALYTICS["reporting &<br/>ML models"]
+    subgraph "Analytics DB (Databricks Delta Lake) ⚠️ DEFERRED"
+        DB_TRIALS["trials<br/>(reference)<br/>⚠️ interim in Postgres"]
+        DB_EHR["participant_ehr<br/>(source data)<br/>⚠️ DEFERRED"]
+        DB_ARCHIVE["conversations_archive<br/>(ML analysis)<br/>⚠️ DEFERRED"]
+        DB_AUDIT["audit_log<br/>⚠️ DEFERRED"]
+        DB_ANALYTICS["reporting &<br/>ML models<br/>⚠️ DEFERRED"]
     end
 
     subgraph "Job Queue"
@@ -487,22 +517,24 @@ graph TB
     SCREEN_AGT --> ADVERS
     ORCH --> SUPER
 
-    SCHED_AGT --> GCAL
+    SCHED_AGT -.->|"post-hackathon"| GCAL
+    SCHED_AGT --> PG_APPTS
     TRANS_AGT --> UBER
 
-    OUTREACH_AGT --> PG_PARTS
+    OUTREACH_AGT -->|"pre-call:<br/>load participant"| PG_PARTS
+    OUTREACH_AGT -->|"pre-call:<br/>load trial criteria"| PG_TRIALS
+    OUTREACH_AGT -->|"context injection:<br/>dynamic_variables +<br/>config_override"| EL
     ID_AGT --> PG_PARTS
     SCREEN_AGT --> PG_PARTS
-    SCREEN_AGT --> DB_TRIALS
-    SCREEN_AGT --> DB_EHR
-    SCHED_AGT --> PG_APPTS
+    SCREEN_AGT --> PG_TRIALS
+    SCREEN_AGT -.->|"DEFERRED"| DB_EHR
     TRANS_AGT --> PG_RIDES
     COMMS_AGT --> CT
     CT --> COMMS_AGT
     ORCH --> PG_CONVOS
     ORCH --> PG_EVENTS
     PG_CONVOS --> GCS
-    SUPER --> DB_AUDIT
+    SUPER -.->|"DEFERRED"| DB_AUDIT
 
     PG_EVENTS -->|stream| PS
     PG_CONVOS -->|stream| PS
@@ -546,7 +578,12 @@ sequenceDiagram
         OUT->>PG: Log event (outreach_blocked)
         Note over OUT: STOP — do not contact
     else No DNC
-        OUT->>TW: Initiate call / SMS
+        Note over OUT,PG: Pre-call context assembly
+        OUT->>PG: Load participant record (name, phone, address, language)
+        OUT->>PG: Load trial criteria via TrialRepository (inclusion/exclusion, site, templates)
+        Note over OUT,EL: Inject context via dynamic_variables + config_override
+        OUT->>EL: Initiate outbound call via API (participant context + trial criteria)
+        EL->>TW: Place outbound call to participant
         TW->>EL: Audio stream (voice)
         EL->>O: Transcribed intent
 
@@ -582,14 +619,14 @@ sequenceDiagram
         ID-->>O: Identity verified ✓
     end
 
-    Note over SC,DB: S3 — Screening & Education
+    Note over SC,PG: S3 — Screening & Education
     O->>SC: Handoff → eligibility screening
     SC->>P: Trial summary (non-promissory) + transport mention
-    SC->>DB: Fetch trial criteria + EHR data
+    SC->>PG: Fetch trial criteria via TrialRepository
     SC->>P: Hard exclude questions first, then eligibility Qs
     P->>SC: Answers
     SC->>PG: Annotate screening_responses (provenance: patient_stated)
-    SC->>DB: Cross-reference EHR — flag discrepancies
+    Note over SC: EHR cross-reference DEFERRED (no Databricks yet)
     SC->>PG: Set eligibility_status + log event
     SC-->>O: ELIGIBLE | PROVISIONAL | INELIGIBLE | NEEDS_HUMAN
 
@@ -597,7 +634,7 @@ sequenceDiagram
         Note over SH,PG: S5 — Geo Gate + Scheduling
         O->>SH: Handoff → schedule
         SH->>PG: Get participant address + ZIP → derive timezone
-        SH->>DB: Get trial max_distance_km
+        SH->>PG: Get trial max_distance_km via TrialRepository
         alt Distance exceeds protocol max
             SH->>PG: Mark ineligible-distance, log event
             SH-->>O: Geo gate failed
@@ -624,12 +661,12 @@ sequenceDiagram
 
     O->>PG: Save conversation + full transcript
     O->>PG: Log event (conversation.ended)
-    PG-->>DB: Pub/Sub → conversations_archive + events
+    Note over PG: Pub/Sub → Databricks DEFERRED
 
-    Note over SV,DB: Post-call audit
+    Note over SV,PG: Post-call audit
     O->>SV: Audit transcript
-    SV->>DB: Compliance check + deception analysis
-    SV->>DB: Write audit_log
+    SV->>PG: Compliance check + deception analysis (events table)
+    Note over SV: Databricks audit_log DEFERRED
 ```
 
 ### 3.3 Appointment Confirmation & Comms Lifecycle
@@ -714,7 +751,7 @@ graph LR
             PROD_API["Cloud Run<br/>API (prod)"]
             PROD_WORKER["Cloud Run<br/>Worker (prod)"]
         end
-        FB["Firebase Hosting<br/>(Demo Dashboard)"]
+        FB["Cloud Run<br/>(Dashboard + API)"]
         DB_CLOUD["Databricks<br/>(Cloud)"]
     end
 
@@ -736,6 +773,8 @@ graph LR
 
 ```mermaid
 graph LR
+    PRE["Pre-call Context<br/>Assembly<br/>(Outreach Agent)"] -->|"dynamic_variables +<br/>config_override<br/>(participant + trial criteria)"| C
+
     A["Participant speaks<br/>(phone)"] -->|PSTN| B["Twilio<br/>(SIP trunk)"]
     B -->|WebSocket<br/>audio stream| C["ElevenLabs<br/>Conv AI 2.0"]
     C -->|STT + LLM<br/>reasoning| D["Agent Response<br/>(text)"]
@@ -743,6 +782,7 @@ graph LR
     E -->|WebSocket<br/>audio| B
     B -->|PSTN| A
 
+    style PRE fill:#9cf,stroke:#333
     style C fill:#f9f,stroke:#333
     style D fill:#ff9,stroke:#333
 
@@ -750,6 +790,8 @@ graph LR
 ```
 
 **Key latency decision**: ElevenLabs Conversational AI 2.0 handles STT + LLM reasoning + TTS in a single pipeline with sub-second turnaround. The LLM backing the voice agent can be Claude or GPT — configured in the ElevenLabs dashboard. Our specialized agents run as tool calls within that LLM context, keeping everything in-stream rather than adding network hops.
+
+**Per-call context injection**: Before each outbound call, the outreach agent loads participant data and trial criteria (both from Postgres via `TrialRepository`) and injects them into the ElevenLabs conversation via `dynamic_variables` (template variables like `{{participant_name}}`, `{{trial_name}}`) and `conversation_config_override` (system prompt with inclusion/exclusion criteria, personalized first_message). This happens once at call initiation — no latency impact during the conversation.
 
 ---
 
@@ -818,6 +860,19 @@ ElevenLabs handles the **voice layer**:
 - The backing LLM (Claude or GPT) runs our agent logic via server-side tool integration
 - Handles conversational cues ("um", "ah") for natural turn-taking
 
+**Per-call personalization** (two mechanisms):
+- **Dynamic Variables**: Define `{{variable_name}}` placeholders in the ElevenLabs agent prompt. At call initiation, pass values via `dynamic_variables` dict in the API call. Used for: `{{participant_name}}`, `{{trial_name}}`, `{{site_name}}`, `{{coordinator_phone}}`. System variables `system__caller_id`, `system__call_sid` are available automatically.
+- **Overrides** (`conversation_config_override`): Override the system prompt, first_message, language, or voice per-call. Used to inject trial-specific inclusion/exclusion criteria into the system prompt so the ElevenLabs LLM knows what screening questions to ask. Must enable "Overrides" in agent Security settings. JSON structure:
+  ```json
+  {
+    "agent": {
+      "prompt": {"prompt": "You are Mary, calling {{participant_name}} about {{trial_name}}. Inclusion: ... Exclusion: ..."},
+      "first_message": "Hi {{participant_name}}, this is Mary calling from..."
+    }
+  }
+  ```
+- **Secret variables**: Prefix with `secret__` to prevent them from being sent to the LLM (e.g. `secret__auth_token` for webhook authentication).
+
 ---
 
 ## 6. Data Model
@@ -828,16 +883,16 @@ ElevenLabs handles the **voice layer**:
 graph LR
     subgraph "Cloud SQL Postgres (OLTP)"
         direction TB
-        PG["Operational State<br/>• participants<br/>• participant_trials<br/>• appointments<br/>• conversations<br/>• agent_reasoning<br/>• events (append&#8209;only)<br/>• handoff_queue<br/>• rides"]
+        PG["Operational State<br/>• participants<br/>• participant_trials<br/>• <b>trials (interim reference)</b><br/>• appointments<br/>• conversations<br/>• agent_reasoning<br/>• events (append&#8209;only)<br/>• handoff_queue<br/>• rides"]
     end
 
-    subgraph "Pub/Sub Event Bridge"
+    subgraph "Pub/Sub Event Bridge ⚠️ DEFERRED"
         PS["App-Level Publisher<br/>(not native CDC)<br/>• events.* (all types)<br/>• conversation.ended<br/>• appointment.status_changed<br/>• handoff.created<br/>+ periodic sweep for stragglers"]
     end
 
-    subgraph "Databricks Delta Lake (OLAP)"
+    subgraph "Databricks Delta Lake (OLAP) ⚠️ DEFERRED"
         direction TB
-        DB["Analytics & Reference<br/>• trials (reference)<br/>• participant_ehr (source)<br/>• conversations_archive<br/>• audit_log<br/>• reporting views<br/>• ML models"]
+        DB["Analytics & Reference<br/>• trials → migrates from Postgres<br/>• participant_ehr (source)<br/>• conversations_archive<br/>• audit_log<br/>• reporting views<br/>• ML models"]
     end
 
     subgraph "GCS Audio Storage"
@@ -1154,12 +1209,12 @@ A Databricks Auto Loader job (or Pub/Sub → Cloud Function → Delta Lake) inge
 - **Appointment status changes** → reporting dashboards (confirmation rates, no-show rates, scheduling patterns)
 - **Handoff events** → coordinator workload analysis, SLA compliance tracking
 
-**What lives only in Databricks:**
-- `trials` — reference data (criteria, visit templates, geo limits), loaded once, read by agents at call start
-- `participant_ehr` — imported from EHR systems, too large/complex for OLTP, used for cross-reference in screening
-- `audit_log` — write-heavy, append-only, analyzed in batch by supervisor agent
+**What will live in Databricks (DEFERRED — post-hackathon):**
+- `trials` — **currently in Postgres as interim table**, accessed via `TrialRepository` abstraction. Will migrate to Databricks when workspace is ready. Zero agent code changes needed (swap repository implementation).
+- `participant_ehr` — imported from EHR systems, too large/complex for OLTP, used for cross-reference in screening. **MVP skips EHR cross-reference** — screening uses participant-stated responses only (provenance: `patient_stated`).
+- `audit_log` — write-heavy, append-only, analyzed in batch by supervisor agent. **MVP uses Postgres events table** for audit.
 - **Note**: `agent_reasoning` is NOT archived to Databricks — it stays in Postgres with strict access controls, separate from conversation data
-- ML models and feature tables (no-show prediction, best contact time/channel, eligibility scoring)
+- ML models and feature tables (no-show prediction, best contact time/channel, eligibility scoring) — **not needed for MVP**
 
 ### 6.3 Audio Storage (GCS)
 
@@ -1400,7 +1455,7 @@ on PR to main:
 |---------|------|------|-------------|-------|
 | `ask-mary-api` | Web (Cloud Run) | 8000 | `us-central1` | FastAPI — handles webhooks, REST endpoints. Min instances: 1 (avoid cold start for Twilio webhooks). |
 | `ask-mary-worker` | Worker (Cloud Run) | — | `us-central1` | Background tasks: reminders, Uber booking, audits. Triggered by Cloud Tasks or Pub/Sub. Min instances: 0. **Dedup guard**: every handler checks `task_idempotency_key` against events table before executing — prevents duplicate calls/texts from retries. |
-| `ask-mary-dashboard` | Static (Firebase Hosting) | 443 | Global CDN | React demo dashboard (built by Claude Code). WebSocket connects to ask-mary-api for real-time updates. |
+| `ask-mary-dashboard` | Static (Cloud Run) | 8000 | `us-west2` | React demo dashboard served as static files from the same Cloud Run service via FastAPI StaticFiles mount. Multi-stage Dockerfile (Node build → Python runtime). Eliminates CORS, separate deployment, and base URL config. Firebase Hosting deferred to post-hackathon if CDN scaling is needed. |
 
 **GCP Services Used**:
 | Service | Purpose |
@@ -1412,7 +1467,7 @@ on PR to main:
 | Cloud Build | CI/CD Docker builds |
 | Cloud Tasks | Scheduled reminders, retries, timed slot releases |
 | Pub/Sub | Event bridge: app-level publisher, Postgres → Databricks |
-| Firebase Hosting | Static frontend (dashboard) |
+| ~~Firebase Hosting~~ | ~~Static frontend~~ — MVP serves frontend from Cloud Run instead (see KI-11) |
 | Cloud Logging | Centralized logs |
 | IAM | Service accounts, least-privilege access |
 
@@ -1420,9 +1475,9 @@ on PR to main:
 
 | Env | Cloud SQL (Postgres) | Databricks | Twilio | ElevenLabs | Uber | Calendar |
 |-----|---------------------|-----------|--------|------------|------|----------|
-| **dev** | `ask_mary_dev` DB | Dev catalog/schema | Test numbers | Test agent | Mock API | Test calendar |
-| **staging** | `ask_mary_staging` DB | Staging catalog/schema | Test numbers | Test agent | Mock API | Test calendar |
-| **prod** | `ask_mary_prod` DB | Prod catalog/schema | Real numbers | Real agent | Real API | Real calendar |
+| **dev** | `ask_mary_dev` DB | Dev catalog/schema | Test numbers | Test agent | Mock API | N/A (post-hackathon) |
+| **staging** | `ask_mary_staging` DB | Staging catalog/schema | Test numbers | Test agent | Mock API | N/A (post-hackathon) |
+| **prod** | `ask_mary_prod` DB | Prod catalog/schema | Real numbers | Real agent | Real API | Real calendar (post-hackathon) |
 
 ---
 
@@ -1433,26 +1488,27 @@ on PR to main:
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
 | 1.1 Project scaffolding | Claude Code | 30 min | FastAPI project structure, pyproject.toml, Dockerfile, Cloud Run config, `comms_templates/` dir with YAML stubs |
-| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides. mary_id generation trigger. |
+| 1.2 Cloud SQL Postgres setup | Claude Code | 20 min | Alembic migrations for operational tables: participants, participant_trials, appointments, conversations, agent_reasoning, events, handoff_queue, rides. mary_id generated app-side via HMAC-SHA256 (not a DB trigger — pepper stays out of DB; UNIQUE constraint prevents raw inserts). |
 | 1.3 Operational DB module | Claude Code | 40 min | `db/postgres.py` — SQLAlchemy models + asyncpg CRUD. Events table append-only (no UPDATE/DELETE). Idempotency key enforcement. Cloud Tasks dedup guard (task_idempotency_key check). Twilio DNC opt-out sync. |
-| 1.4 Databricks analytics tables | Claude Code | 20 min | Create Delta Lake tables (trials, participant_ehr, conversations_archive, audit_log), seed with test trial/EHR data |
-| 1.5 Analytics DB module | Claude Code | 15 min | `db/databricks.py` — read-only connector for trial criteria, EHR lookups, geo distance limits |
+| 1.4 ~~Databricks analytics tables~~ | ~~Claude Code~~ | ~~20 min~~ | **DEFERRED to post-hackathon.** Databricks workspace not yet available. Trials table created in Postgres as interim. |
+| 1.4a Interim trials table + TrialRepository | Claude Code | 30 min | Alembic migration for `trials` table in Postgres (same schema as planned Databricks table). `db/trials.py` — `TrialRepository` with `get_trial()`, `get_trial_criteria()`, `list_active_trials()`. Abstraction layer: swap to Databricks later with zero agent code changes. Seed with synthetic "Diabetes Study A" trial data. |
+| 1.5 ~~Analytics DB module~~ | ~~Claude Code~~ | ~~15 min~~ | **DEFERRED to post-hackathon.** `db/databricks.py` not needed until Databricks is available. |
 | 1.6 GCS audio bucket setup | Claude Code | 10 min | Create `ask-mary-audio` bucket, IAM policies, signed URL helper function |
-| 1.7 ElevenLabs + Twilio setup | Human | 45 min | Buy Twilio number, create ElevenLabs agent, configure native integration |
+| 1.7 ElevenLabs + Twilio setup | Human | 45 min | Buy Twilio number, create ElevenLabs agent (enable Overrides + Authentication in Security settings, set up `{{variable}}` prompt template), configure native Twilio integration (import number into ElevenLabs, auto-configures webhook — no SIP trunk needed) |
 | 1.8 OpenAI Agents SDK skeleton | Claude Code | 45 min | Orchestrator + all agent stubs with handoff pattern + safety_gate inline function |
 
 ### Phase 2: Core Agents (Hours 3-7)
 
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
-| 2.1 Outreach Agent | Claude Code | 30 min | DNC enforcement, retry cadence logic (3 voice + SMS), consent capture, events logging |
+| 2.1 Outreach Agent | Claude Code | 45 min | DNC enforcement, retry cadence logic (3 voice + SMS), consent capture, events logging. **Pre-call context assembly**: load participant (Postgres) + trial criteria (Postgres via TrialRepository), build dynamic_variables + conversation_config_override, initiate ElevenLabs outbound call via API with injected context. |
 | 2.2 Identity Agent | Claude Code | 30 min | DOB+ZIP verification, duplicate/wrong-person detection, identity_status update |
-| 2.3 Screening Agent | Claude Code | 60 min | Trial criteria matching, hard excludes first, EHR cross-reference, provenance annotation, caregiver auth, eligibility_status output |
+| 2.3 Screening Agent | Claude Code | 60 min | Trial criteria matching (via TrialRepository), hard excludes first, provenance annotation, caregiver auth, eligibility_status output. EHR cross-reference deferred (no Databricks) — MVP uses participant-stated responses only. |
 | 2.4 Safety Gate | Claude Code | 30 min | Blocking pre-check with Langfuse latency instrumentation, 7 trigger types, handoff_queue writes, severity routing, hard ceiling 1000ms |
-| 2.5 Scheduling Agent | Claude Code | 60 min | Geo/distance gate, Google Calendar MCP, slot reservation (SELECT FOR UPDATE), 12h confirmation window, teach-back, Cloud Tasks scheduling |
+| 2.5 Scheduling Agent | Claude Code | 45 min | Geo/distance gate, **Postgres-based slot management** (SELECT FOR UPDATE reservation, appointments table), 12h confirmation window, teach-back, Cloud Tasks scheduling. Google Calendar integration deferred to post-hackathon. |
 | 2.6 Transport Agent | Claude Code | 30 min | Uber Health mock + interface, pickup address verification, T-24h/T-2h reconfirmation scheduling |
 | 2.7 Comms Agent | Claude Code | 45 min | Event-driven cadence (T-48h prep, T-24h confirm, T-2h check-in, T+0 rescue), idempotency keys, unreachable workflow, channel switching |
-| 2.8 ElevenLabs voice integration | Claude Code | 30 min | Connect agent SDK to ElevenLabs server-side tools, audio recording → GCS |
+| 2.8 ElevenLabs voice integration | Claude Code | 45 min | Connect agent SDK to ElevenLabs server-side tools, audio recording → GCS. **Context injection**: build ElevenLabs outbound call helper in `services/elevenlabs_client.py` that accepts participant + trial data, constructs dynamic_variables + conversation_config_override payload, and calls ElevenLabs API. Configure agent prompt template with `{{variable}}` placeholders. |
 | 2.9 Comms templates | Claude Code | 15 min | Write all `comms_templates/*.yaml` files with Jinja2 variables |
 
 ### Phase 3: Safety & Testing (Hours 7-9)
@@ -1463,7 +1519,7 @@ on PR to main:
 | 3.2 Supervisor Agent | Claude Code | 30 min | Post-call transcript audit, compliance check, deception detection, provenance audit |
 | 3.3 Adversarial Checker | Claude Code | 20 min | Re-screen with different phrasing, EHR cross-reference, Cloud Tasks T+14d scheduling |
 | 3.4 Evaluation scenarios | Claude Code | 30 min | 11 YAML scenarios + runner (happy path through medical advice handoff) |
-| 3.5 Integration tests | Claude Code | 20 min | Webhook, DB, calendar, GCS, Cloud Tasks, events append-only tests |
+| 3.5 Integration tests | Claude Code | 20 min | Webhook, DB, slot management, GCS, Cloud Tasks, events append-only tests |
 
 ### Phase 4: Frontend & Polish (Hours 9-11)
 
@@ -1471,7 +1527,7 @@ on PR to main:
 |------|-------|----------|---------|
 | 4.1 Demo dashboard (React + WebSocket) | Claude Code | 90 min | Real-time demo dashboard per `local_docs/demo_script.md`: 4 panels (Call & Safety Gates, Eligibility, Scheduling, Transport) + scrolling events feed. WebSocket push from FastAPI for live updates during calls. "Start Demo Call" button triggers outbound Twilio call. |
 | 4.2 Dashboard API endpoints | Claude Code | 30 min | REST + WebSocket endpoints: participants list/detail, appointments, handoff_queue, conversations, events, analytics summary. WebSocket broadcasts events as they happen for real-time dashboard. |
-| 4.3 Pub/Sub event bridge | Claude Code | 20 min | App-level publisher: after Postgres commits, publish to Pub/Sub topic → Databricks ingestion. Periodic sweep for stragglers. |
+| 4.3 ~~Pub/Sub event bridge~~ | ~~Claude Code~~ | ~~20 min~~ | **DEFERRED to post-hackathon.** No Databricks destination. Events stay in Postgres. |
 | 4.4 Deploy to GCP Cloud Run | Claude Code | 30 min | Docker build, push to Artifact Registry, deploy Cloud Run services, set env vars via Secret Manager |
 | 4.5 End-to-end test call | Human | 30 min | Call the Twilio number, run through full flow: outreach → screening → booking → confirmation |
 
@@ -1482,7 +1538,7 @@ on PR to main:
 
 | Task | Owner | Duration | Details |
 |------|-------|----------|---------|
-| 5.1 Seed demo data | Claude Code | 15 min | Create "Diabetes Study A" trial in Databricks with inclusion/exclusion criteria, visit templates, calendar slots. Create synthetic participant record. Seed coordinator phone for handoff. |
+| 5.1 Seed demo data | Claude Code | 15 min | Create "Diabetes Study A" trial in **Postgres trials table** with inclusion/exclusion criteria, visit templates, available slots. Create synthetic participant record. Seed coordinator phone for handoff. |
 | 5.2 Demo dry run | Human + Claude Code | 30 min | Run the full 60-second demo per `local_docs/demo_script.md`. Call Twilio number, walk through disclosure → identity → screening → booking → transport → comms. Verify dashboard updates in real-time. |
 | 5.3 Fix blockers from dry run | Claude Code | 30 min | Fix whatever broke in 5.2. Common issues: WebSocket disconnect, event ordering, voice latency, DTMF capture timing, slot booking race condition. |
 | 5.4 Safety escalation test | Human | 5 min | Run the optional 10-second safety escalation add-on: say "chest pain" → verify handoff_queue entry appears on dashboard with severity=HIGH. |
@@ -1500,8 +1556,7 @@ gantt
     Project scaffolding           :f1, 00:00, 30m
     Cloud SQL Postgres setup      :f2, 00:00, 20m
     Operational DB module         :f3, after f2, 40m
-    Databricks analytics tables   :f4a, 00:00, 20m
-    Analytics DB module           :f4b, after f4a, 15m
+    Interim trials table + TrialRepository :f4a, after f2, 30m
     GCS audio bucket              :f4c, 00:00, 10m
     ElevenLabs + Twilio setup     :f5, 00:00, 45m
     Agent SDK skeleton            :f6, after f1, 45m
@@ -1527,8 +1582,7 @@ gantt
     section Frontend & Integration
     Demo Dashboard (React+WS)     :d1, after a5, 90m
     Dashboard API + WebSocket     :d2, after a5, 30m
-    Pub/Sub event bridge          :d2b, after d2, 20m
-    Deploy to Cloud Run           :d3, after d2b, 30m
+    Deploy to Cloud Run           :d3, after d2, 30m
     E2E test call                 :d4, after d3, 30m
 
     section Demo Validation
@@ -1548,14 +1602,14 @@ gantt
 | Uber Health API requires enterprise account | High | Medium | Mock API with well-defined interface; swap later |
 | ElevenLabs voice latency spikes | Medium | High | Pre-test during setup phase; have SMS fallback |
 | Safety gate latency impacts conversation flow | Medium | Medium | Every invocation instrumented via Langfuse (elapsed_ms, trigger type). No hard cap for MVP — measure actual p50/p95/p99 first. Hard ceiling at 1000ms. If consistently slow, move to parallel check with interrupt. |
-| Databricks SQL warehouse cold start (analytics queries) | Medium | Low | Only used for reference data + batch analytics, not in hot path. Keep warehouse warm for demo. |
+| ~~Databricks SQL warehouse cold start~~ | ~~Medium~~ | ~~Low~~ | **DEFERRED.** MVP uses Postgres for trial data — no warehouse cold start issue. |
 | Twilio number not provisioned in time | Low | Critical | Buy number immediately in Phase 1 |
 | Participant data privacy in demo | Medium | High | Use synthetic data only; never use real PHI |
 | Agent hallucinations during screening | Medium | High | Structured output with Pydantic; supervisor agent review; provenance annotations |
 | Cloud Run cold start on webhook | Medium | Medium | Set min instances = 1 for API service; use always-on revision |
-| Google Calendar OAuth complexity | Medium | Medium | Use service account (no user consent flow) |
+| ~~Google Calendar OAuth complexity~~ | ~~Medium~~ | ~~Medium~~ | **DEFERRED to post-hackathon.** MVP uses Postgres-based slot management. |
 | HIPAA BAA not in place for demo | Medium | High | Use synthetic data only during hackathon; BAA process is separate from technical setup |
-| Google Calendar MCP not covered by Google BAA | Medium | Medium | Don't store PHI in calendar event titles/descriptions; use opaque reference IDs only |
+| ~~Google Calendar MCP not covered by Google BAA~~ | ~~Medium~~ | ~~Medium~~ | **DEFERRED to post-hackathon.** MVP doesn't use Google Calendar. |
 | Confirmation window complexity (12h timeout + slot release) | Medium | Medium | Cloud Tasks handles timing; slot_held_until enforced by DB constraint; test thoroughly with time simulation |
 | Events table grows large quickly | Low | Medium | Append-only by design; partition by month; Pub/Sub streams to Databricks for long-term storage; Postgres only needs recent events |
 | Handoff queue SLA missed (HANDOFF_NOW not immediate) | Low | High | Voice calls: Twilio warm transfer (Conference API) to coordinator_phone in real-time. Non-voice: immediate outbound call + dashboard alert. Fallback: SMS to coordinator if call fails. |
@@ -1589,17 +1643,28 @@ The iteration workflow is:
 
 ### Q2: ElevenLabs LLM Configuration
 
-**Status**: RESOLVED — Dual approach.
+**Status**: RESOLVED — Dual approach + per-call context injection.
 
-**Phase 1 (Hackathon)**: Configure backing LLM in ElevenLabs dashboard (fastest setup).
+**Phase 1 (Hackathon)**: Configure backing LLM in ElevenLabs dashboard (fastest setup). Per-call context (participant data + trial criteria) is injected via `dynamic_variables` and `conversation_config_override` in the outbound call API. The ElevenLabs agent prompt uses `{{variable}}` placeholders that are filled at call time. Overrides replace the system prompt with trial-specific inclusion/exclusion criteria.
 
 **Phase 2 (Post-hackathon)**: Build a Custom LLM server endpoint that routes to our OpenAI Agents SDK backend. ElevenLabs supports this natively — the custom LLM endpoint must follow the **OpenAI Chat Completion request/response format**. Our FastAPI server can expose an `/v1/chat/completions` endpoint that internally routes to our agent orchestrator.
 
 **Key finding**: ElevenLabs also supports **Server Tools** (webhooks called during conversation) and **MCP server connections**, so even in Phase 1 we can have the ElevenLabs-hosted LLM call back into our agent tools without a full custom LLM integration.
 
 **Architecture**:
-- Phase 1: `ElevenLabs (hosted LLM) → Server Tools (webhook) → Our FastAPI → Agent SDK`
-- Phase 2: `ElevenLabs (custom LLM) → Our FastAPI /v1/chat/completions → Agent SDK`
+- Phase 1: `Outreach Agent (context assembly) → ElevenLabs API (dynamic_variables + config_override) → ElevenLabs (hosted LLM with per-call prompt) → Server Tools (webhook) → Our FastAPI → Agent SDK`
+- Phase 2: `Outreach Agent (context assembly) → ElevenLabs API (dynamic_variables + config_override) → ElevenLabs (custom LLM) → Our FastAPI /v1/chat/completions → Agent SDK`
+
+**Per-call context flow**:
+```
+Outreach Agent decides to call participant X for trial Y
+  → Load participant from Postgres (name, phone, address, language, enrollment)
+  → Load trial via TrialRepository (Postgres interim; Databricks post-hackathon): inclusion_criteria, exclusion_criteria, site_name, visit_templates
+  → Build dynamic_variables: {participant_name, trial_name, site_name, coordinator_phone}
+  → Build conversation_config_override: {agent.prompt.prompt: <system prompt with criteria>, agent.first_message: <personalized greeting>}
+  → POST to ElevenLabs outbound call API with assembled context
+  → ElevenLabs agent speaks with full trial + participant awareness
+```
 
 ### Q3: Uber Health Access
 
@@ -1621,14 +1686,12 @@ No Uber Health account available. Plan:
 - [ ] Provide to Claude Code as environment variable:
   - `DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/ask_mary_dev`
 
-**Databricks Checklist** (analytics DB — can be set up slightly later):
-- [ ] Create/access Databricks workspace
-- [ ] Create a SQL warehouse (serverless recommended)
-- [ ] Generate a personal access token
-- [ ] Provide to Claude Code as environment variables:
-  - `DATABRICKS_SERVER_HOSTNAME`
-  - `DATABRICKS_HTTP_PATH`
-  - `DATABRICKS_TOKEN`
+**Databricks Checklist** (analytics DB — **DEFERRED to post-hackathon**):
+- [ ] ~~Create/access Databricks workspace~~
+- [ ] ~~Create a SQL warehouse (serverless recommended)~~
+- [ ] ~~Generate a personal access token~~
+- [ ] ~~Provide to Claude Code as environment variables~~
+- **MVP uses Postgres interim `trials` table instead. See task 1.4a.**
 
 ### Q5: Twilio Number
 
@@ -1677,7 +1740,7 @@ No Uber Health account available. Plan:
 **Strategy to avoid technical debt**:
 1. Use `trial_id` everywhere from day one (already in the data model)
 2. Use `agency_id` as a column but hardcode to a single value for MVP
-3. Never hardcode trial-specific logic — always load from the `trials` table
+3. Never hardcode trial-specific logic — always load from the `trials` table (Postgres interim via `TrialRepository`; Databricks post-hackathon)
 4. This means upgrading to multi-agency later is just adding auth middleware + agency selector, not restructuring data
 
 ---
@@ -1691,10 +1754,10 @@ These items require manual human action before the hackathon clock starts:
 | GCP project + enable APIs | P0 | 10 min | Enable Cloud Run, Cloud SQL, Artifact Registry, Secret Manager, Cloud Tasks, Pub/Sub, Cloud Storage |
 | Cloud SQL Postgres instance | P0 | 5 min | Create instance (`ask-mary-db`), note connection string. Claude Code handles schema migration. |
 | GCS audio bucket | P0 | 5 min | Create `ask-mary-audio` bucket in same region, set IAM policies for service account. |
-| Databricks workspace + SQL warehouse | P0 | 15 min | For analytics layer. See Q4 above. |
+| ~~Databricks workspace + SQL warehouse~~ | ~~P0~~ | ~~15 min~~ | **DEFERRED to post-hackathon.** MVP uses Postgres interim trials table. |
 | Twilio account + phone number | P0 | 10 min | See Q5 above. Ensure Voice + SMS capabilities. |
-| ElevenLabs account + agent creation | P0 | 15 min | Create Conversational AI agent in dashboard. Enable call recording if available. |
-| Google Calendar service account | P1 | 10 min | OAuth credentials for calendar access |
+| ElevenLabs account + agent creation | P0 | 15 min | Create Conversational AI agent in dashboard. Enable call recording if available. **Enable Overrides + Authentication in Security settings.** Set up prompt template with `{{participant_name}}`, `{{trial_name}}`, `{{site_name}}`, `{{coordinator_phone}}` placeholders. |
+| ~~Google Calendar service account~~ | ~~P1~~ | ~~10 min~~ | **DEFERRED to post-hackathon.** MVP uses Postgres slot management. |
 | OpenAI API key | P0 | 5 min | For Agents SDK |
 | Anthropic API key | P0 | 5 min | For Claude Code dev workflow |
 | GitHub repo access tokens | P1 | 5 min | Fine-grained PAT for CI/CD |
@@ -1728,7 +1791,7 @@ The live demo is the **ultimate success gate** for the project. It must run end-
 2. ElevenLabs voice agent delivers disclosure and captures consent
 3. Identity verification completes (DOB year + ZIP via DTMF)
 4. Screening questions answered and eligibility determined
-5. Calendar availability queried and appointment booked
+5. Slot availability queried (from Postgres) and appointment booked
 6. Transport requested and confirmed
 7. Comms cadence scheduled (T-48h, T-24h, T-2h)
 8. Dashboard updates in real-time for every step
@@ -1736,6 +1799,54 @@ The live demo is the **ultimate success gate** for the project. It must run end-
 10. (Optional) Safety escalation triggers handoff queue entry
 
 **Implementation note**: The dashboard is built by Claude Code (not Lovable) because the real-time WebSocket behavior is the core of what makes the demo compelling. React frontend with FastAPI WebSocket backend pushing events as they happen.
+
+---
+
+## 14. Post-Hackathon Roadmap
+
+Items deferred from the hackathon MVP to be implemented after the demo.
+
+### 14.1 Google Calendar Integration (Priority: High)
+
+**Why deferred**: OAuth complexity + BAA gap not worth the time during hackathon. Postgres-based slot management covers the MVP demo.
+
+**What it adds**:
+- Coordinator visibility into appointment slots via Google Calendar UI
+- Two-way sync: slots booked in Ask Mary appear in the coordinator's calendar, and coordinator-side edits propagate back
+- Per-trial `calendar_id` support (different calendars per trial)
+- External calendar sharing with trial site staff
+
+**Implementation plan**:
+1. Create Google Calendar service account (OAuth2, no user consent flow)
+2. Build `services/calendar_client.py` with Google Calendar API:
+   - `list_available_slots(calendar_id, date_range, duration)` — query free/busy
+   - `create_event(calendar_id, appointment)` — book slot (opaque title, no PHI)
+   - `cancel_event(calendar_id, event_id)` — release slot
+   - `update_event(calendar_id, event_id, changes)` — reschedule
+3. Wire scheduling agent to call `calendar_client` after Postgres slot reservation
+4. Add Google Calendar MCP server for agent-native calendar access
+5. Implement webhook listener for coordinator-side calendar edits (optional)
+6. Add `google_event_id` sync between `appointments` table and Calendar events (column already exists in schema)
+
+**HIPAA note**: Never store PHI in calendar event titles or descriptions. Use opaque reference IDs (e.g. appointment UUID) and let coordinators look up details in the dashboard.
+
+**Human setup required**:
+- Create service account (`ask-mary-calendar`) in GCP Console
+- Enable Google Calendar API
+- Share target calendar(s) with the service account email
+- Set `GOOGLE_CALENDAR_CREDENTIALS_PATH` and `GOOGLE_CALENDAR_ID` in `.env`
+
+### 14.2 Other Post-Hackathon Items
+
+| Item | Priority | Description |
+|------|----------|-------------|
+| Custom LLM endpoint | High | Replace ElevenLabs hosted LLM with `/v1/chat/completions` endpoint routing to OpenAI Agents SDK |
+| Real Uber Health integration | Medium | Replace mock with real Uber Health API (requires enterprise partnership) |
+| Databricks ML models | Medium | No-show prediction, best contact time/channel, eligibility scoring |
+| Multi-agency auth | Low | Agency-level permissions, billing, data isolation |
+| Full Langfuse observability | Medium | End-to-end tracing across all agents and services |
+| Audio recording playback | Medium | GCS audio storage with dashboard playback UI |
+| HIPAA BAA activation | High | Execute BAAs with all vendors before using real PHI |
 
 ---
 
@@ -1759,6 +1870,10 @@ The live demo is the **ultimate success gate** for the project. It must run end-
 - [Langfuse — OpenAI Agents SDK Integration](https://langfuse.com/guides/cookbook/example_evaluating_openai_agents)
 - [ElevenLabs — Custom LLM Integration](https://elevenlabs.io/docs/agents-platform/customization/llm/custom-llm)
 - [ElevenLabs — Server Tools](https://elevenlabs.io/docs/agents-platform/customization/tools/server-tools)
+- [ElevenLabs — Dynamic Variables](https://elevenlabs.io/docs/eleven-agents/customization/personalization/dynamic-variables)
+- [ElevenLabs — Overrides (conversation_config_override)](https://elevenlabs.io/docs/eleven-agents/customization/personalization/overrides)
+- [ElevenLabs — Twilio Personalization](https://elevenlabs.io/docs/agents-platform/customization/personalization/twilio-personalization)
+- [ElevenLabs — Batch Calling](https://elevenlabs.io/docs/agents-platform/phone-numbers/batch-calls)
 - [ElevenLabs — Integrating External Agents](https://elevenlabs.io/blog/integrating-complex-external-agents)
 - [ElevenLabs — MCP Support](https://elevenlabs.io/docs/agents-platform/customization/tools/mcp)
 - [RaySurfer — Semantic Code Caching SDK](https://www.raysurfer.com/)

@@ -1,0 +1,7 @@
+name: protocol_change
+channel: sms
+description: Protocol or schedule change notification.
+body: >
+  Important update for {{ trial_name }}: {{ participant_name }},
+  there has been a change to your upcoming visit. Please call
+  {{ coordinator_phone }} or reply ACK to acknowledge this message.

@@ -1,0 +1,41 @@
+scenario: happy_path
+description: "Full pipeline: outreach -> screening -> booking -> confirm"
+participant:
+  first_name: Jane
+  last_name: Doe
+  dob: "1985-06-15"
+  zip: "97201"
+  distance_km: 30.0
+  phone: "+15035551234"
+trial_id: "diabetes-study-a"
+steps:
+  - action: check_dnc_before_contact
+    module: src.agents.outreach
+    params:
+      channel: voice
+    expect:
+      blocked: false
+  - action: capture_consent
+    module: src.agents.outreach
+    params:
+      disclosed_automation: true
+      consent_to_continue: true
+    expect:
+      consent_captured: true
+  - action: verify_identity
+    module: src.agents.identity
+    params:
+      dob_year: 1985
+      zip_code: "97201"
+    expect:
+      verified: true
+  - action: book_appointment
+    module: src.agents.scheduling
+    params:
+      slot_datetime: "2026-02-10T10:00:00"
+      visit_type: "screening"
+    expect:
+      booked: true
+failure_criteria:
+  phi_shared_before_identity: false
+  dnc_violated: false

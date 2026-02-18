@@ -1,0 +1,32 @@
+scenario: wrong_person
+description: "Identity verification fails -> mark wrong person -> add to DNC"
+participant:
+  first_name: Alice
+  last_name: Johnson
+  dob: "1992-11-03"
+  zip: "60614"
+  distance_km: 10.0
+  phone: "+17735554321"
+trial_id: "neuro-study-c"
+steps:
+  - action: capture_consent
+    module: src.agents.outreach
+    params:
+      disclosed_automation: true
+      consent_to_continue: true
+    expect:
+      consent_captured: true
+  - action: verify_identity
+    module: src.agents.identity
+    params:
+      dob_year: 1990
+      zip_code: "99999"
+    expect:
+      verified: false
+  - action: mark_wrong_person
+    module: src.agents.identity
+    params: {}
+    expect:
+      marked: true
+failure_criteria:
+  phi_shared_before_identity: false

@@ -101,6 +101,14 @@
 - [ ] Create a new Conversational AI 2.0 agent
   - Select backing LLM (Claude or GPT)
   - Enable call recording if available
+- [ ] **Enable Overrides** in agent → Security settings tab (required for per-call prompt injection)
+- [ ] **Enable Authentication** in agent settings (required for passing custom parameters)
+- [ ] Set up agent prompt template with dynamic variable placeholders:
+  - `{{participant_name}}` — filled per-call with participant name
+  - `{{trial_name}}` — filled per-call with trial name
+  - `{{site_name}}` — filled per-call with trial site name
+  - `{{coordinator_phone}}` — filled per-call for handoff
+  - Note: Inclusion/exclusion criteria are injected via `conversation_config_override` (system prompt override), not as individual variables
 - [ ] Note **ELEVENLABS_API_KEY**: `___________________________`
 - [ ] Note **ELEVENLABS_AGENT_ID**: `___________________________`
 
@@ -109,15 +117,19 @@
 > Requires: Twilio (#4) + ElevenLabs (#5) accounts created
 > This is **Task 1.7** from the implementation plan
 
-- [ ] In ElevenLabs dashboard, configure the native Twilio integration
-  - Enter Twilio Account SID and Auth Token
-  - Link your Twilio phone number to the ElevenLabs agent
-- [ ] In Twilio console, verify the webhook/SIP trunk is pointing to ElevenLabs
+- [ ] In ElevenLabs dashboard → Telephony → Phone Numbers:
+  - Click **Import number** → select **From Twilio**
+  - Enter Twilio Account SID, Auth Token, and phone number
+  - ElevenLabs auto-configures the Twilio webhook (no manual SIP trunk needed)
+- [ ] Link the imported number to your ElevenLabs agent (select agent from dropdown)
+- [ ] In Twilio console → Phone Numbers → your number → Voice & Fax:
+  - Verify "A call comes in" shows a webhook URL set by ElevenLabs
+  - Note: SIP trunk field will be blank — this is expected (native integration uses webhooks, not SIP)
 - [ ] **Test**: Call your Twilio number from a real phone
   - [ ] Verify the call connects to ElevenLabs agent
   - [ ] Verify audio quality is acceptable
   - [ ] Verify round-trip latency is reasonable (<2s response)
-- [ ] If issues: check Twilio logs, ElevenLabs logs, try alternative voice
+- [ ] If issues: check Twilio debugger logs, ElevenLabs conversation logs, try alternative voice
 
 ### 7. Create GCS Audio Bucket (~5 min)
 
@@ -151,17 +163,18 @@
 - [ ] Note **DATABRICKS_HTTP_PATH**: `___________________________`
 - [ ] Note **DATABRICKS_TOKEN**: `___________________________`
 
-### 9. Create Google Calendar Service Account (~10 min)
+### 9. ~~Create Google Calendar Service Account~~ — DEFERRED (Post-Hackathon)
 
-> Needed by: Phase 2 (scheduling agent)
+> **Deferred**: MVP uses Postgres-based slot management. Google Calendar integration is post-hackathon.
+> See Section 14.1 of `ask_mary_plan.md` for the full implementation plan.
 
-- [ ] Go to GCP Console → APIs & Services → Credentials
-- [ ] Create service account (name: `ask-mary-calendar`)
-- [ ] Download JSON key file
-- [ ] Enable Google Calendar API
-- [ ] Share the target calendar with the service account email
-- [ ] Note **GOOGLE_CALENDAR_CREDENTIALS** (JSON key file path): `___________________________`
-- [ ] Note **GOOGLE_CALENDAR_ID**: `___________________________`
+- [ ] ~~Go to GCP Console → APIs & Services → Credentials~~
+- [ ] ~~Create service account (name: `ask-mary-calendar`)~~
+- [ ] ~~Download JSON key file~~
+- [ ] ~~Enable Google Calendar API~~
+- [ ] ~~Share the target calendar with the service account email~~
+- [ ] ~~Note **GOOGLE_CALENDAR_CREDENTIALS** (JSON key file path)~~
+- [ ] ~~Note **GOOGLE_CALENDAR_ID**~~
 
 ### 10. Create GitHub Fine-Grained PAT (~5 min)
 

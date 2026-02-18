@@ -1,0 +1,8 @@
+name: day_of_checkin
+channel: sms
+description: T-2h day-of check-in and transport reminder.
+body: >
+  Hi {{ participant_name }}, your {{ trial_name }} appointment at
+  {{ site_name }} is in 2 hours ({{ appointment_time }}).
+  Are you on track to arrive? Reply YES, RUNNING LATE, or CANCEL.
+  Call {{ coordinator_phone }} if you need help.

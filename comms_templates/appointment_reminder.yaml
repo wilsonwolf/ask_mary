@@ -1,0 +1,8 @@
+name: appointment_reminder
+channel: sms
+description: General appointment reminder.
+body: >
+  Reminder: {{ participant_name }}, your {{ trial_name }} appointment
+  at {{ site_name }} is on {{ appointment_date }} at {{ appointment_time }}.
+  Please arrive 15 minutes early. Call {{ coordinator_phone }} if you
+  need to reschedule.

@@ -1,0 +1,9 @@
+name: ineligible_close
+channel: sms
+description: Neutral close when participant is ineligible for trial.
+body: >
+  Hi {{ participant_name }}, thank you for your interest in the
+  {{ trial_name }} study at {{ site_name }}. Unfortunately, based
+  on the information provided, you do not meet the eligibility
+  criteria at this time. Would you like to be contacted about
+  future studies? Reply YES or NO.

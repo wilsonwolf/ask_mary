@@ -1,0 +1,8 @@
+name: appointment_booked
+channel: sms
+description: Appointment booking confirmation.
+body: >
+  Hi {{ participant_name }}, your {{ trial_name }} appointment has
+  been booked at {{ site_name }} on {{ appointment_date }} at
+  {{ appointment_time }}. You will receive a confirmation request
+  24 hours before. Call {{ coordinator_phone }} with questions.

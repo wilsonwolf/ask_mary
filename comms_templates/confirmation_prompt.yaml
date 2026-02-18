@@ -1,0 +1,8 @@
+name: confirmation_prompt
+channel: sms
+description: T-24h confirmation request.
+body: >
+  Hi {{ participant_name }}, just confirming your {{ trial_name }}
+  appointment at {{ site_name }} on {{ appointment_date }} at
+  {{ appointment_time }}. Reply YES to confirm or RESCHEDULE to
+  pick a new time. Call {{ coordinator_phone }} with questions.

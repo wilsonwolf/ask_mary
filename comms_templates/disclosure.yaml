@@ -1,0 +1,8 @@
+name: disclosure
+channel: voice
+description: Initial disclosure delivered at first contact.
+body: >
+  Hello, this is Mary, an automated assistant calling on behalf of
+  {{ site_name }} regarding a clinical research study.
+  This call may be recorded for quality purposes.
+  Would you like to continue?

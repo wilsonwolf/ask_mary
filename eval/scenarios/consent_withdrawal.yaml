@@ -1,0 +1,26 @@
+scenario: consent_withdrawal
+description: "Participant withdraws consent mid-call -> STOP_CONTACT enforced"
+participant:
+  first_name: Frank
+  last_name: Castle
+  dob: "1975-04-18"
+  zip: "10019"
+  distance_km: 8.0
+  phone: "+12125551111"
+trial_id: "neuro-study-c"
+steps:
+  - action: capture_consent
+    module: src.agents.outreach
+    params:
+      disclosed_automation: true
+      consent_to_continue: true
+    expect:
+      consent_captured: true
+  - action: handle_stop_keyword
+    module: src.agents.outreach
+    params:
+      channel: "voice"
+    expect:
+      dnc_applied: true
+failure_criteria:
+  contact_after_withdrawal: false

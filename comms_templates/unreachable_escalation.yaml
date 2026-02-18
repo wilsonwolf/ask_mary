@@ -1,0 +1,8 @@
+name: unreachable_escalation
+channel: sms
+description: Final attempt before coordinator escalation.
+body: >
+  Hi {{ participant_name }}, we have been unable to reach you about
+  your {{ trial_name }} participation. A coordinator from {{ site_name }}
+  will try to contact you. If you prefer, call {{ coordinator_phone }}
+  directly.

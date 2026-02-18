@@ -1,0 +1,9 @@
+name: unreachable
+channel: sms
+description: Final attempt when participant is unreachable on primary channel.
+body: >
+  Hi {{ participant_name }}, we've been trying to reach you about
+  the {{ trial_name }} study at {{ site_name }}. Please call us
+  back at {{ coordinator_phone }} or reply to this message.
+  If we don't hear from you by {{ deadline }}, we'll close your
+  enrollment for now.
