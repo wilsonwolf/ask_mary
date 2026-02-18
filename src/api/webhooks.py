@@ -35,6 +35,7 @@ from src.agents.transport import book_transport
 from src.api.event_bus import broadcast_event
 from src.config.settings import get_settings
 from src.db.events import log_event
+from src.db.postgres import get_participant_by_id
 from src.db.session import get_async_session
 from src.services.gcs_client import (
     build_object_path,
@@ -108,11 +109,7 @@ async def handle_server_tool(
     if "parameters" in body and isinstance(body["parameters"], dict):
         params = body["parameters"]
     else:
-        params = {
-            k: v
-            for k, v in body.items()
-            if k not in ("tool_name", "conversation_id")
-        }
+        params = {k: v for k, v in body.items() if k not in ("tool_name", "conversation_id")}
 
     logger.info(
         "server_tool_called",
@@ -128,7 +125,14 @@ async def handle_server_tool(
         return {"error": f"unknown_tool: {tool_name}"}
 
     params["_conversation_id"] = conversation_id
-    return await handler(session, params)
+    try:
+        return await handler(session, params)
+    except (ValueError, KeyError, TypeError) as exc:
+        logger.exception(
+            "server_tool_handler_error",
+            extra={"tool_name": tool_name, "error": str(exc)},
+        )
+        return {"error": f"Invalid parameters for {tool_name}: {exc}"}
 
 
 async def _resolve_call_sid(
@@ -224,11 +228,25 @@ async def _handle_verify_identity(
         Identity verification result.
     """
     participant_id = uuid.UUID(params["participant_id"])
+    dob_raw = params.get("dob_year", "")
+    zip_raw = params.get("zip_code", "")
+    if not dob_raw or not zip_raw:
+        return {
+            "verified": False,
+            "error": "Missing dob_year or zip_code. Ask the participant again.",
+        }
+    try:
+        dob_year = int(dob_raw)
+    except ValueError:
+        return {
+            "verified": False,
+            "error": f"Invalid dob_year: '{dob_raw}'. Must be a 4-digit year.",
+        }
     result = await verify_identity(
         session,
         participant_id,
-        int(params["dob_year"]),
-        params["zip_code"],
+        dob_year,
+        zip_raw,
     )
     event_type = "identity_verified" if result.get("verified") else "identity_failed"
     await _log_and_broadcast(
@@ -329,7 +347,7 @@ async def _handle_determine_eligibility(
         participant_id,
         trial_id,
     )
-    if "error" in result:
+    if "enrollment_not_found" in result.get("reason", ""):
         event_type = "screening_error"
     else:
         event_type = "screening_completed"
@@ -541,6 +559,45 @@ async def _handle_safety_check(
     return result_dict
 
 
+async def _handle_capture_consent(
+    session: AsyncSession,
+    params: dict,
+) -> dict:
+    """Handle consent capture server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id,
+            disclosed_automation, consent_to_continue.
+
+    Returns:
+        Consent recording result.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    disclosed = params.get("disclosed_automation", "false").lower() == "true"
+    consented = params.get("consent_to_continue", "false").lower() == "true"
+
+    participant = await get_participant_by_id(session, participant_id)
+    if participant is not None:
+        consent_data = dict(participant.consent or {})
+        consent_data["disclosed_automation"] = disclosed
+        consent_data["consent_to_continue"] = consented
+        participant.consent = consent_data
+
+    payload = {
+        "disclosed_automation": disclosed,
+        "consent_to_continue": consented,
+    }
+    await _log_and_broadcast(
+        session,
+        participant_id,
+        "consent_captured",
+        payload,
+        trial_id=params.get("trial_id"),
+    )
+    return {"consent_recorded": True, **payload}
+
+
 TOOL_HANDLERS = {
     "verify_identity": _handle_verify_identity,
     "detect_duplicate": _handle_detect_duplicate,
@@ -552,6 +609,7 @@ TOOL_HANDLERS = {
     "book_appointment": _handle_book_appointment,
     "book_transport": _handle_book_transport,
     "safety_check": _handle_safety_check,
+    "capture_consent": _handle_capture_consent,
     # Aliases: ElevenLabs prompt names → existing handlers
     "record_screening_answer": _handle_record_screening_response,
     "check_eligibility": _handle_determine_eligibility,
@@ -661,6 +719,28 @@ async def _fetch_transcript(
     return data.get("transcript", [])
 
 
+async def _fetch_audio(
+    conversation_id: str,
+) -> bytes | None:
+    """Fetch conversation audio recording from ElevenLabs API.
+
+    Args:
+        conversation_id: ElevenLabs conversation ID string.
+
+    Returns:
+        Raw audio bytes or None on failure.
+    """
+    from src.services.elevenlabs_client import ElevenLabsClient
+
+    settings = get_settings()
+    client = ElevenLabsClient(
+        api_key=settings.elevenlabs_api_key,
+        agent_id=settings.elevenlabs_agent_id,
+        agent_phone_number_id=settings.elevenlabs_agent_phone_number_id,
+    )
+    return await client.get_conversation_audio(conversation_id)
+
+
 async def _trigger_post_call_checks(
     session: AsyncSession,
     participant_id: uuid.UUID,
@@ -710,13 +790,11 @@ class CallCompletionPayload(BaseModel):
         conversation_id: ElevenLabs conversation ID.
         participant_id: Participant UUID string.
         trial_id: Trial identifier.
-        audio_data_base64: Base64-encoded audio data.
     """
 
     conversation_id: str
     participant_id: str
     trial_id: str
-    audio_data_base64: str | None = None
 
 
 @router.post("/elevenlabs/call-complete")
@@ -724,11 +802,11 @@ async def handle_call_completion(
     payload: CallCompletionPayload,
     session: AsyncSession = Depends(get_async_session),
 ) -> dict:
-    """Handle call completion — upload audio, trigger post-call checks.
+    """Handle call completion — fetch audio, upload to GCS, run checks.
 
-    Uploads audio recording to GCS, stores the object path in the
-    conversations table, then triggers supervisor audit and adversarial
-    recheck scheduling.
+    Fetches the audio recording from ElevenLabs API, uploads to GCS,
+    stores the object path in the conversations table, fetches the
+    transcript, then triggers supervisor audit and adversarial recheck.
 
     Args:
         payload: Call completion payload.
@@ -737,8 +815,6 @@ async def handle_call_completion(
     Returns:
         Dict with upload status and GCS path.
     """
-    import base64
-
     participant_id = uuid.UUID(payload.participant_id)
     conversation_id_str = payload.conversation_id
 
@@ -750,8 +826,8 @@ async def handle_call_completion(
     )
 
     gcs_path = None
-    if payload.audio_data_base64:
-        audio_bytes = base64.b64decode(payload.audio_data_base64)
+    audio_bytes = await _fetch_audio(conversation_id_str)
+    if audio_bytes:
         settings = get_settings()
         object_path = build_object_path(
             payload.trial_id,
@@ -767,11 +843,10 @@ async def handle_call_completion(
         gcs_path = result.gcs_path
     else:
         logger.warning(
-            "call_complete_without_audio",
+            "call_complete_audio_fetch_failed",
             extra={
                 "conversation_id": conversation_id_str,
                 "participant_id": str(participant_id),
-                "trial_id": payload.trial_id,
             },
         )
 
@@ -790,7 +865,7 @@ async def handle_call_completion(
         extra={
             "conversation_id": conversation_id_str,
             "gcs_path": gcs_path,
-            "had_audio": payload.audio_data_base64 is not None,
+            "had_audio": audio_bytes is not None,
         },
     )
 

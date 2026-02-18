@@ -76,6 +76,32 @@ class TestServerToolEndpoint:
         assert response.status_code == 200
         assert response.json()["verified"] is True
 
+    async def test_verify_identity_empty_dob_returns_error(self, app) -> None:
+        """verify_identity with empty dob_year returns error, not 500."""
+        participant_id = str(uuid.uuid4())
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/webhooks/elevenlabs/server-tool",
+                json={
+                    "tool_name": "verify_identity",
+                    "conversation_id": "conv-123",
+                    "parameters": {
+                        "participant_id": participant_id,
+                        "dob_year": "",
+                        "zip_code": "97201",
+                    },
+                },
+            )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["verified"] is False
+        assert "error" in data
+
     async def test_safety_check_routes(self, app) -> None:
         """safety_check tool calls the safety service."""
         participant_id = str(uuid.uuid4())
@@ -297,13 +323,11 @@ class TestNormalizeTranscript:
 class TestCallCompletionEndpoint:
     """ElevenLabs call completion webhook."""
 
-    async def test_uploads_audio_to_gcs(self, app) -> None:
-        """Uploads audio and returns GCS path."""
-        import base64
-
+    async def test_fetches_audio_and_uploads_to_gcs(self, app) -> None:
+        """Fetches audio via API and uploads to GCS."""
         from src.services.gcs_client import UploadResult
 
-        fake_audio = base64.b64encode(b"fake-wav-data").decode()
+        fake_audio = b"fake-wav-data"
         mock_result = UploadResult(
             gcs_path="trial-1/pid/cid.wav",
             bucket_name="ask-mary-audio",
@@ -311,10 +335,15 @@ class TestCallCompletionEndpoint:
 
         with (
             patch(
+                "src.api.webhooks._fetch_audio",
+                new_callable=AsyncMock,
+                return_value=fake_audio,
+            ),
+            patch(
                 "src.api.webhooks.upload_audio",
                 new_callable=AsyncMock,
                 return_value=mock_result,
-            ),
+            ) as mock_upload,
             patch(
                 "src.api.webhooks._get_or_create_conversation",
                 new_callable=AsyncMock,
@@ -332,33 +361,30 @@ class TestCallCompletionEndpoint:
                         "conversation_id": str(uuid.uuid4()),
                         "participant_id": str(uuid.uuid4()),
                         "trial_id": "trial-1",
-                        "audio_data_base64": fake_audio,
                     },
                 )
         assert response.status_code == 200
         data = response.json()
         assert data["uploaded"] is True
         assert data["gcs_path"] == "trial-1/pid/cid.wav"
+        mock_upload.assert_called_once()
 
-    async def test_creates_conversation_and_persists_gcs_path(
-        self,
-        app,
-    ) -> None:
-        """Creates conversation row and sets audio_gcs_path."""
-        import base64
-
+    async def test_persists_gcs_path_on_conversation(self, app) -> None:
+        """Fetches audio, uploads, and sets audio_gcs_path."""
         from src.services.gcs_client import UploadResult
 
-        fake_audio = base64.b64encode(b"fake-wav-data").decode()
-        conversation_id = str(uuid.uuid4())
         mock_result = UploadResult(
             gcs_path="trial-1/pid/cid.wav",
             bucket_name="ask-mary-audio",
         )
-
         mock_conversation = MagicMock()
 
         with (
+            patch(
+                "src.api.webhooks._fetch_audio",
+                new_callable=AsyncMock,
+                return_value=b"audio-bytes",
+            ),
             patch(
                 "src.api.webhooks.upload_audio",
                 new_callable=AsyncMock,
@@ -378,10 +404,9 @@ class TestCallCompletionEndpoint:
                 response = await client.post(
                     "/webhooks/elevenlabs/call-complete",
                     json={
-                        "conversation_id": conversation_id,
+                        "conversation_id": str(uuid.uuid4()),
                         "participant_id": str(uuid.uuid4()),
                         "trial_id": "trial-1",
-                        "audio_data_base64": fake_audio,
                     },
                 )
         assert response.status_code == 200
@@ -411,6 +436,11 @@ class TestCallCompletionEndpoint:
                 return_value=fake_transcript,
             ) as mock_fetch,
             patch(
+                "src.api.webhooks._fetch_audio",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "src.api.webhooks._trigger_post_call_checks",
                 new_callable=AsyncMock,
             ),
@@ -436,7 +466,7 @@ class TestCallCompletionEndpoint:
         assert len(stored["entries"]) == 2
         assert stored["entries"][0]["content"] == "Hello, this is Mary."
 
-    async def test_no_audio_still_runs_post_call_checks(self, app) -> None:
+    async def test_audio_fetch_fails_still_runs_post_call(self, app) -> None:
         """Returns uploaded=False but still triggers post-call checks."""
         mock_conversation = MagicMock()
         mock_conversation.conversation_id = uuid.uuid4()
@@ -446,6 +476,11 @@ class TestCallCompletionEndpoint:
                 "src.api.webhooks._get_or_create_conversation",
                 new_callable=AsyncMock,
                 return_value=mock_conversation,
+            ),
+            patch(
+                "src.api.webhooks._fetch_audio",
+                new_callable=AsyncMock,
+                return_value=None,
             ),
             patch(
                 "src.api.webhooks._trigger_post_call_checks",
@@ -469,6 +504,100 @@ class TestCallCompletionEndpoint:
         data = response.json()
         assert data["uploaded"] is False
         mock_checks.assert_called_once()
+
+
+class TestCaptureConsent:
+    """capture_consent server tool webhook."""
+
+    async def test_capture_consent_logs_event(self, app) -> None:
+        """capture_consent logs consent_captured event and broadcasts."""
+        participant_id = str(uuid.uuid4())
+        mock_participant = MagicMock()
+        mock_participant.consent = {}
+
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-01-01T00:00:00"
+
+        with (
+            patch(
+                "src.api.webhooks.get_participant_by_id",
+                new_callable=AsyncMock,
+                return_value=mock_participant,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=mock_event,
+            ) as mock_log,
+            patch(
+                "src.api.webhooks.broadcast_event",
+                new_callable=AsyncMock,
+            ) as mock_broadcast,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "capture_consent",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "disclosed_automation": "true",
+                            "consent_to_continue": "true",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["consent_recorded"] is True
+        mock_log.assert_called_once()
+        call_kwargs = mock_log.call_args
+        assert call_kwargs[1]["event_type"] == "consent_captured"
+        mock_broadcast.assert_called_once()
+
+    async def test_capture_consent_updates_participant(self, app) -> None:
+        """capture_consent updates participant.consent JSONB."""
+        participant_id = str(uuid.uuid4())
+        mock_participant = MagicMock()
+        mock_participant.consent = {}
+
+        with (
+            patch(
+                "src.api.webhooks.get_participant_by_id",
+                new_callable=AsyncMock,
+                return_value=mock_participant,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "capture_consent",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "disclosed_automation": "true",
+                            "consent_to_continue": "true",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        assert mock_participant.consent["disclosed_automation"] is True
+        assert mock_participant.consent["consent_to_continue"] is True
 
 
 class TestSignedUrlEndpoint:

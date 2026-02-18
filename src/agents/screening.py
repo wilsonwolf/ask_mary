@@ -4,6 +4,7 @@ Uses the OpenAI Agents SDK (openai-agents package) for agent definition.
 The 'agents' import is the external SDK, NOT src/agents/.
 """
 
+import re
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,6 +106,110 @@ async def record_screening_response(
     return {"recorded": True}
 
 
+def _extract_answer(entry: object) -> str:
+    """Extract answer string from a screening response entry.
+
+    Args:
+        entry: Either a nested dict ``{"answer": ..., "provenance": ...}``
+            or a plain value.
+
+    Returns:
+        The answer as a string.
+    """
+    if isinstance(entry, dict) and "answer" in entry:
+        return str(entry["answer"])
+    return str(entry)
+
+
+def _is_affirmative(answer: str) -> bool:
+    """Check whether an answer string is affirmative.
+
+    Args:
+        answer: Free-text answer from participant.
+
+    Returns:
+        True if the answer indicates yes/true/agreement.
+    """
+    lower = answer.lower().strip()
+    affirmatives = {
+        "yes",
+        "true",
+        "y",
+        "yeah",
+        "yep",
+        "correct",
+        "confirmed",
+        "sure",
+        "affirmative",
+    }
+    return lower in affirmatives or lower.startswith("yes")
+
+
+def _extract_number(answer: str) -> float | None:
+    """Try to extract a number from a free-text answer.
+
+    Args:
+        answer: Free-text answer from participant.
+
+    Returns:
+        Extracted float or None if no number found.
+    """
+    match = re.search(r"(\d+\.?\d*)", answer)
+    return float(match.group(1)) if match else None
+
+
+def _find_response(responses: dict, criterion_key: str) -> object | None:
+    """Find a screening response for a criterion key.
+
+    Checks exact key first, then tries the base key for
+    min_/max_ and _min/_max pairs (e.g. min_age → age).
+
+    Args:
+        responses: Participant screening responses dict.
+        criterion_key: Criterion key to look up.
+
+    Returns:
+        Response entry if found, else None.
+    """
+    if criterion_key in responses:
+        return responses[criterion_key]
+    for prefix in ("min_", "max_"):
+        if criterion_key.startswith(prefix):
+            base = criterion_key[len(prefix) :]
+            if base in responses:
+                return responses[base]
+    for suffix in ("_min", "_max"):
+        if criterion_key.endswith(suffix):
+            base = criterion_key[: -len(suffix)]
+            if base in responses:
+                return responses[base]
+    return None
+
+
+def _is_min_criterion(key: str) -> bool:
+    """Check if a criterion key represents a minimum bound.
+
+    Args:
+        key: Criterion key.
+
+    Returns:
+        True if the key is a min-type criterion.
+    """
+    return key.startswith("min_") or key.endswith("_min")
+
+
+def _is_max_criterion(key: str) -> bool:
+    """Check if a criterion key represents a maximum bound.
+
+    Args:
+        key: Criterion key.
+
+    Returns:
+        True if the key is a max-type criterion.
+    """
+    return key.startswith("max_") or key.endswith("_max")
+
+
 async def determine_eligibility(
     session: AsyncSession,
     participant_id: uuid.UUID,
@@ -112,36 +217,88 @@ async def determine_eligibility(
 ) -> dict:
     """Determine participant eligibility based on screening responses.
 
+    Handles nested response format ``{"answer": ..., "provenance": ...}``
+    as created by ``record_screening_response``. Resolves grouped keys
+    so that a response under ``age`` satisfies both ``min_age`` and
+    ``max_age`` criteria.
+
     Args:
         session: Active database session.
         participant_id: Participant UUID.
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with eligibility status and reasons.
+        Dict with ``eligible`` bool and ``reason`` string.
     """
     pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
-        return {"error": "enrollment_not_found"}
+        return {
+            "eligible": False,
+            "status": "ineligible",
+            "reason": "enrollment_not_found",
+        }
 
     criteria = await get_trial_criteria(session, trial_id)
-    exclusions = criteria.get("exclusion", {})
     responses = pt.screening_responses or {}
+    failed: list[str] = []
 
-    # Check hard excludes first
-    for key, required_value in exclusions.items():
-        if responses.get(key) == required_value:
+    # Check exclusions first
+    for key, required_value in criteria.get("exclusion", {}).items():
+        entry = _find_response(responses, key)
+        if entry is None:
+            continue
+        answer = _extract_answer(entry)
+        if required_value is True and _is_affirmative(answer):
             pt.eligibility_status = "ineligible"
-            return {"status": "ineligible", "reason": f"excluded_by_{key}"}
+            return {
+                "eligible": False,
+                "status": "ineligible",
+                "reason": f"excluded_by_{key}",
+            }
 
-    # Check if all inclusion criteria have responses
+    # Check inclusions
     inclusions = criteria.get("inclusion", {})
-    missing = [k for k in inclusions if k not in responses]
+    missing: list[str] = []
+    for key, required_value in inclusions.items():
+        entry = _find_response(responses, key)
+        if entry is None:
+            missing.append(key)
+            continue
+        answer = _extract_answer(entry)
+        if isinstance(required_value, (int, float)):
+            num = _extract_number(answer)
+            if num is None:
+                continue
+            if _is_min_criterion(key) and num < required_value:
+                failed.append(f"{key}: {num} < {required_value}")
+            elif _is_max_criterion(key) and num > required_value:
+                failed.append(f"{key}: {num} > {required_value}")
+        elif isinstance(required_value, str):
+            normalized = required_value.replace("_", " ").lower()
+            if not _is_affirmative(answer) and normalized not in answer.lower():
+                failed.append(f"{key}: expected {required_value}")
+
+    if failed:
+        pt.eligibility_status = "ineligible"
+        return {
+            "eligible": False,
+            "status": "ineligible",
+            "reason": f"failed: {', '.join(failed)}",
+        }
+
     if missing:
-        return {"status": "needs_human", "missing_criteria": missing}
+        return {
+            "eligible": False,
+            "status": "ineligible",
+            "reason": f"missing responses: {', '.join(missing)}",
+        }
 
     pt.eligibility_status = "eligible"
-    return {"status": "eligible"}
+    return {
+        "eligible": True,
+        "status": "eligible",
+        "reason": "all_criteria_met",
+    }
 
 
 async def record_caregiver_info(

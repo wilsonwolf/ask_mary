@@ -114,40 +114,57 @@ class TestRecordScreeningResponse:
 
 
 class TestDetermineEligibility:
-    """Eligibility determination."""
+    """Eligibility determination with real nested response format."""
 
-    async def test_eligible_status(self) -> None:
-        """Returns eligible when all criteria met."""
-        mock_session = AsyncMock()
+    def _make_pt(self, responses: dict) -> MagicMock:
+        """Create a mock participant_trial with screening responses."""
         pt = MagicMock()
-        pt.screening_responses = {"age": "45", "diagnosis": "type_2_diabetes"}
+        pt.screening_responses = responses
         pt.eligibility_status = "pending"
+        return pt
 
+    def _make_session(self, pt: MagicMock) -> AsyncMock:
+        """Create a mock session that returns the given participant_trial."""
+        session = AsyncMock()
         result_mock = MagicMock()
         result_mock.scalar_one_or_none.return_value = pt
-        mock_session.execute.return_value = result_mock
+        session.execute.return_value = result_mock
+        return session
 
+    def _resp(self, answer: str, provenance: str = "patient_stated") -> dict:
+        """Build a nested screening response as record_screening_response creates."""
+        return {"answer": answer, "provenance": provenance}
+
+    async def test_eligible_with_nested_responses(self) -> None:
+        """Returns eligible when nested responses satisfy all criteria."""
+        pt = self._make_pt({
+            "age": self._resp("45"),
+            "diagnosis": self._resp("yes, type 2 diabetes"),
+            "hba1c": self._resp("8.2"),
+        })
+        session = self._make_session(pt)
         with patch(
             "src.agents.screening.get_trial_criteria",
             return_value={
-                "inclusion": {"min_age": 18, "diagnosis": "type_2_diabetes"},
+                "inclusion": {
+                    "min_age": 18,
+                    "max_age": 75,
+                    "diagnosis": "type_2_diabetes",
+                    "hba1c_min": 7.0,
+                    "hba1c_max": 10.5,
+                },
                 "exclusion": {},
             },
         ):
-            result = await determine_eligibility(mock_session, uuid.uuid4(), "trial-1")
-        assert result["status"] in ("eligible", "provisional", "needs_human")
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is True
 
-    async def test_ineligible_status(self) -> None:
-        """Returns ineligible when hard exclude present in responses."""
-        mock_session = AsyncMock()
-        pt = MagicMock()
-        pt.screening_responses = {"pregnant_or_nursing": True}
-        pt.eligibility_status = "pending"
-
-        result_mock = MagicMock()
-        result_mock.scalar_one_or_none.return_value = pt
-        mock_session.execute.return_value = result_mock
-
+    async def test_excluded_by_affirmative_answer(self) -> None:
+        """Returns ineligible when participant answers yes to exclusion."""
+        pt = self._make_pt({
+            "pregnant_or_nursing": self._resp("yes"),
+        })
+        session = self._make_session(pt)
         with patch(
             "src.agents.screening.get_trial_criteria",
             return_value={
@@ -155,8 +172,137 @@ class TestDetermineEligibility:
                 "exclusion": {"pregnant_or_nursing": True},
             },
         ):
-            result = await determine_eligibility(mock_session, uuid.uuid4(), "trial-1")
-        assert result["status"] == "ineligible"
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is False
+        assert "pregnant_or_nursing" in result.get("reason", "")
+
+    async def test_exclusion_not_triggered_by_negative(self) -> None:
+        """Participant answering no to exclusion is not excluded."""
+        pt = self._make_pt({
+            "pregnant_or_nursing": self._resp("no"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {},
+                "exclusion": {"pregnant_or_nursing": True},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is True
+
+    async def test_age_below_minimum_ineligible(self) -> None:
+        """Returns ineligible when age is below min_age."""
+        pt = self._make_pt({
+            "age": self._resp("15"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {"min_age": 18},
+                "exclusion": {},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is False
+
+    async def test_age_above_maximum_ineligible(self) -> None:
+        """Returns ineligible when age exceeds max_age."""
+        pt = self._make_pt({
+            "age": self._resp("80"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {"max_age": 75},
+                "exclusion": {},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is False
+
+    async def test_missing_responses_returns_incomplete(self) -> None:
+        """Returns incomplete (not needs_human) when responses missing."""
+        pt = self._make_pt({})
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {"min_age": 18, "diagnosis": "type_2_diabetes"},
+                "exclusion": {},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is False
+        assert "missing" in result.get("reason", "").lower()
+
+    async def test_grouped_key_lookup(self) -> None:
+        """Response under 'age' satisfies both min_age and max_age."""
+        pt = self._make_pt({
+            "age": self._resp("45"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {"min_age": 18, "max_age": 75},
+                "exclusion": {},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is True
+
+    async def test_diagnosis_match(self) -> None:
+        """Diagnosis answer containing expected value passes."""
+        pt = self._make_pt({
+            "diagnosis": self._resp("yes I have type 2 diabetes"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {"diagnosis": "type_2_diabetes"},
+                "exclusion": {},
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is True
+
+    async def test_full_diabetes_trial_eligible(self) -> None:
+        """Full Diabetes Study A criteria with realistic answers — eligible."""
+        pt = self._make_pt({
+            "age": self._resp("54"),
+            "diagnosis": self._resp("yes, type 2 diabetes"),
+            "hba1c": self._resp("8.2"),
+            "pregnant_or_nursing": self._resp("no"),
+            "insulin_dependent": self._resp("no"),
+            "egfr_below_30": self._resp("no"),
+            "active_cancer_treatment": self._resp("no"),
+        })
+        session = self._make_session(pt)
+        with patch(
+            "src.agents.screening.get_trial_criteria",
+            return_value={
+                "inclusion": {
+                    "min_age": 18,
+                    "max_age": 75,
+                    "diagnosis": "type_2_diabetes",
+                    "hba1c_min": 7.0,
+                    "hba1c_max": 10.5,
+                },
+                "exclusion": {
+                    "pregnant_or_nursing": True,
+                    "insulin_dependent": True,
+                    "egfr_below_30": True,
+                    "active_cancer_treatment": True,
+                },
+            },
+        ):
+            result = await determine_eligibility(session, uuid.uuid4(), "trial-1")
+        assert result["eligible"] is True
 
 
 class TestRecordCaregiverInfo:
