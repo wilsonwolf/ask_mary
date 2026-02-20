@@ -17,6 +17,15 @@ from src.db.models import Appointment
 from src.db.postgres import create_appointment, create_handoff, get_participant_by_id
 from src.db.trials import get_trial
 from src.services.cloud_tasks_client import enqueue_reminder
+from src.shared.response_models import (
+    AppointmentBookingResult,
+    GeoEligibilityResult,
+    SlotAvailabilityResult,
+    SlotHoldResult,
+    SlotReleaseResult,
+    TeachBackResult,
+)
+from src.shared.types import AppointmentStatus, Channel, HandoffSeverity, Provenance
 
 CONFIRMATION_WINDOW_HOURS = 12
 SLOT_HOLD_MINUTES = 15
@@ -26,7 +35,7 @@ async def check_geo_eligibility(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> GeoEligibilityResult:
     """Check if participant is within trial's max distance.
 
     Args:
@@ -35,7 +44,7 @@ async def check_geo_eligibility(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with 'eligible' boolean and distance info.
+        GeoEligibilityResult with eligibility status and distance info.
     """
     participant = await get_participant_by_id(session, participant_id)
     trial = await get_trial(session, trial_id)
@@ -43,17 +52,17 @@ async def check_geo_eligibility(
     max_km = trial.max_distance_km or 80.0
 
     if distance is None:
-        return {"eligible": True, "reason": "distance_unknown"}
+        return GeoEligibilityResult(eligible=True, reason="distance_unknown")
     if distance <= max_km:
-        return {"eligible": True, "distance_km": distance}
-    return {"eligible": False, "distance_km": distance, "max_km": max_km}
+        return GeoEligibilityResult(eligible=True, distance_km=distance)
+    return GeoEligibilityResult(eligible=False, distance_km=distance, max_km=max_km)
 
 
 async def find_available_slots(
     session: AsyncSession,
     trial_id: str,
     preferred_dates: list[str],
-) -> dict:
+) -> SlotAvailabilityResult:
     """Find available appointment slots for preferred dates.
 
     Args:
@@ -62,11 +71,11 @@ async def find_available_slots(
         preferred_dates: List of ISO date strings.
 
     Returns:
-        Dict with list of available slot datetimes.
+        SlotAvailabilityResult with list of available slot datetimes.
     """
     trial = await get_trial(session, trial_id)
     hours = trial.operating_hours or {}
-    slots: list[str] = []
+    slots: list[dict[str, str]] = []
 
     for date_str in preferred_dates:
         dt = datetime.fromisoformat(date_str)
@@ -74,9 +83,12 @@ async def find_available_slots(
         day_hours = hours.get(day_name, {})
         if day_hours:
             open_time = day_hours.get("open", "09:00")
-            slots.append(f"{date_str}T{open_time}:00")
+            slots.append({"datetime": f"{date_str}T{open_time}:00"})
 
-    return {"slots": slots}
+    return SlotAvailabilityResult(
+        available=len(slots) > 0,
+        slots=slots,
+    )
 
 
 async def hold_slot(
@@ -84,7 +96,7 @@ async def hold_slot(
     participant_id: uuid.UUID,
     trial_id: str,
     slot_datetime: datetime,
-) -> dict:
+) -> SlotHoldResult:
     """Hold a slot temporarily for a participant.
 
     Creates a HELD appointment with slot_held_until expiry.
@@ -98,19 +110,23 @@ async def hold_slot(
         slot_datetime: Requested slot datetime.
 
     Returns:
-        Dict confirming hold with expiry time.
+        SlotHoldResult confirming hold with expiry time.
     """
     conflict = await session.execute(
         select(Appointment)
         .where(
             Appointment.trial_id == trial_id,
             Appointment.scheduled_at == slot_datetime,
-            Appointment.status.in_(["held", "booked", "confirmed"]),
+            Appointment.status.in_([
+                AppointmentStatus.HELD,
+                AppointmentStatus.BOOKED,
+                AppointmentStatus.CONFIRMED,
+            ]),
         )
         .with_for_update()
     )
     if conflict.scalar_one_or_none() is not None:
-        return {"held": False, "reason": "slot_taken"}
+        return SlotHoldResult(held=False, error="slot_taken")
 
     expires_at = datetime.now(UTC) + timedelta(
         minutes=SLOT_HOLD_MINUTES,
@@ -122,17 +138,15 @@ async def hold_slot(
         visit_type="pending",
         scheduled_at=slot_datetime,
     )
-    appointment.status = "held"
+    appointment.status = AppointmentStatus.HELD
     appointment.slot_held_until = expires_at
     await _enqueue_slot_release(
         participant_id, appointment.appointment_id, expires_at,
     )
-    return {
-        "held": True,
-        "appointment_id": str(appointment.appointment_id),
-        "slot_datetime": slot_datetime.isoformat(),
-        "expires_at": expires_at.isoformat(),
-    }
+    return SlotHoldResult(
+        held=True,
+        appointment_id=str(appointment.appointment_id),
+    )
 
 
 async def book_appointment(
@@ -141,7 +155,7 @@ async def book_appointment(
     trial_id: str,
     slot_datetime: datetime,
     visit_type: str,
-) -> dict:
+) -> AppointmentBookingResult:
     """Book an appointment with a 12-hour confirmation window.
 
     If a held appointment exists for this participant+trial+slot,
@@ -155,7 +169,7 @@ async def book_appointment(
         visit_type: Visit type (screening, baseline, follow_up).
 
     Returns:
-        Dict confirming booking with confirmation deadline.
+        AppointmentBookingResult confirming booking with deadline.
     """
     booked_at = datetime.now(UTC)
     confirmation_due = booked_at + timedelta(
@@ -167,13 +181,13 @@ async def book_appointment(
             Appointment.participant_id == participant_id,
             Appointment.trial_id == trial_id,
             Appointment.scheduled_at == slot_datetime,
-            Appointment.status == "held",
+            Appointment.status == AppointmentStatus.HELD,
         )
     )
     appointment = result.scalar_one_or_none()
 
     if appointment:
-        appointment.status = "booked"
+        appointment.status = AppointmentStatus.BOOKED
         appointment.visit_type = visit_type
     else:
         conflict = await session.execute(
@@ -181,12 +195,16 @@ async def book_appointment(
             .where(
                 Appointment.trial_id == trial_id,
                 Appointment.scheduled_at == slot_datetime,
-                Appointment.status.in_(["held", "booked", "confirmed"]),
+                Appointment.status.in_([
+                    AppointmentStatus.HELD,
+                    AppointmentStatus.BOOKED,
+                    AppointmentStatus.CONFIRMED,
+                ]),
             )
             .with_for_update()
         )
         if conflict.scalar_one_or_none() is not None:
-            return {"booked": False, "reason": "slot_taken"}
+            return AppointmentBookingResult(booked=False, reason="slot_taken")
         appointment = await create_appointment(
             session,
             participant_id=participant_id,
@@ -202,16 +220,16 @@ async def book_appointment(
         event_type="appointment_booked",
         appointment_id=appointment.appointment_id,
         trial_id=trial_id,
-        provenance="system",
+        provenance=Provenance.SYSTEM,
     )
     await _enqueue_confirmation_check(
         participant_id, appointment.appointment_id, confirmation_due,
     )
-    return {
-        "booked": True,
-        "appointment_id": str(appointment.appointment_id),
-        "confirmation_due_at": confirmation_due.isoformat(),
-    }
+    return AppointmentBookingResult(
+        booked=True,
+        appointment_id=str(appointment.appointment_id),
+        confirmation_due_at=confirmation_due.isoformat(),
+    )
 
 
 async def _enqueue_slot_release(
@@ -231,7 +249,7 @@ async def _enqueue_slot_release(
         participant_id=participant_id,
         appointment_id=appointment_id,
         template_id="slot_release",
-        channel="system",
+        channel=Channel.SYSTEM,
         send_at=expires_at,
         idempotency_key=key,
     )
@@ -255,7 +273,7 @@ async def _enqueue_confirmation_check(
         participant_id=participant_id,
         appointment_id=appointment_id,
         template_id="confirmation_check",
-        channel="system",
+        channel=Channel.SYSTEM,
         send_at=check_at,
         idempotency_key=key,
     )
@@ -268,7 +286,7 @@ async def verify_teach_back(
     date_response: str,
     time_response: str,
     location_response: str,
-) -> dict:
+) -> TeachBackResult:
     """Verify participant's teach-back of appointment details.
 
     Args:
@@ -280,7 +298,7 @@ async def verify_teach_back(
         location_response: Participant's location answer.
 
     Returns:
-        Dict with 'passed' boolean and attempt count.
+        TeachBackResult with verification status.
     """
     result = await session.execute(
         select(Appointment).where(
@@ -289,7 +307,7 @@ async def verify_teach_back(
     )
     appointment = result.scalar_one_or_none()
     if appointment is None:
-        return {"error": "appointment_not_found"}
+        return TeachBackResult(passed=False, error="appointment_not_found")
 
     appointment.teach_back_attempts += 1
     site = (appointment.site_name or "").lower()
@@ -300,27 +318,27 @@ async def verify_teach_back(
 
     if is_passed:
         appointment.teach_back_passed = True
-    result_dict: dict = {
-        "passed": is_passed,
-        "attempts": appointment.teach_back_attempts,
-    }
-    if not is_passed and appointment.teach_back_attempts >= 2:
-        result_dict["handoff_required"] = True
+    is_handoff_required = not is_passed and appointment.teach_back_attempts >= 2
+    if is_handoff_required:
         await create_handoff(
             session,
             participant_id=participant_id,
             reason="teach_back_failed",
-            severity="CALLBACK_TICKET",
+            severity=HandoffSeverity.CALLBACK_TICKET,
             summary="Teach-back failed twice — participant may "
             "not understand appointment details",
         )
-    return result_dict
+    return TeachBackResult(
+        passed=is_passed,
+        handoff_required=is_handoff_required,
+        attempts=appointment.teach_back_attempts,
+    )
 
 
 async def release_expired_slot(
     session: AsyncSession,
     appointment_id: uuid.UUID,
-) -> dict:
+) -> SlotReleaseResult:
     """Release an expired slot hold.
 
     Args:
@@ -328,7 +346,7 @@ async def release_expired_slot(
         appointment_id: Appointment UUID.
 
     Returns:
-        Dict with release status.
+        SlotReleaseResult with release status.
     """
     result = await session.execute(
         select(Appointment).where(
@@ -337,11 +355,15 @@ async def release_expired_slot(
     )
     appointment = result.scalar_one_or_none()
     if appointment is None:
-        return {"error": "appointment_not_found"}
+        return SlotReleaseResult(released=False, reason="appointment_not_found")
 
-    appointment.status = "expired_unconfirmed"
+    appointment.status = AppointmentStatus.EXPIRED_UNCONFIRMED
     appointment.slot_released_at = datetime.now(UTC)
-    return {"released": True}
+    return SlotReleaseResult(
+        released=True,
+        appointment_id=str(appointment_id),
+        reason="slot_released",
+    )
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

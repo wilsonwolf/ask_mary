@@ -1,6 +1,6 @@
 # Ask Mary — Known Issues
 
-> Last updated: 2026-02-13 (Phase 4/5 in progress)
+> Last updated: 2026-02-20 (Phase 5+ Foundation Then Flood gap closure)
 
 ---
 
@@ -24,12 +24,6 @@
 - **Files**: `src/services/elevenlabs_client.py`
 - **Description**: Overrides are now enabled in ElevenLabs Security settings. Per-call system prompts work via `conversation_config_override`, which replaces the entire dashboard prompt at call time. This is fragile — any change to the base prompt in the dashboard is silently overridden. A `dynamic_variables` approach (injecting only the trial-specific fields into a template prompt managed in the dashboard) would be more maintainable and let non-engineers update the base prompt without code changes.
 - **Action needed**: Post-hackathon, migrate from `conversation_config_override` to `dynamic_variables` for trial criteria injection.
-
-### KI-4: Cloud Tasks enqueue is a stub
-- **Severity**: Low (MVP acceptable)
-- **Files**: `src/services/cloud_tasks_client.py`
-- **Description**: `enqueue_reminder()` logs the payload and returns a mock task ID. Production requires a real `google-cloud-tasks` client POST to a Cloud Tasks queue.
-- **Action needed**: Replace stub with real Cloud Tasks API calls when GCP queue is created.
 
 ### KI-5: GCS upload is synchronous within async context
 - **Severity**: Low (performance)
@@ -80,6 +74,15 @@
   - **Option B: Hybrid with external safety loop** — Keep ElevenLabs as orchestrator. Add pipeline state tracking + agent reasoning logging to webhook handlers. Use WebSocket monitoring feed to run an external supervisor agent (OpenAI) in parallel. Trigger adversarial recheck via Cloud Tasks post-call.
   - **Option C: Custom LLM integration** — Route ElevenLabs through a custom LLM endpoint that wraps OpenAI orchestrator. Full pipeline control, but highest complexity and latency.
 - **Action needed**: Architecture review to decide which option. The goal is ensuring safety checks and balances are enforced at the backend level, not just relied upon in the ElevenLabs prompt.
+- **Partial progress (2026-02-20 Foundation Then Flood session)**:
+  - Webhook handlers now have 18 tool handlers (was ~8)
+  - Safety gate instruction reinforced in ElevenLabs system prompt ("MANDATORY -- call before EVERY response")
+  - `mark_call_outcome` server tool added for outcome tracking
+  - Comms cadence scheduling wired to call completion
+  - Outreach retry cadence wired to call completion
+  - Transport reconfirmation scheduling wired to booking
+  - ElevenLabs Workflows API payload serializer implemented (`elevenlabs_workflows.py`)
+  - **Still open**: Pipeline state tracking, agent reasoning logging, supervisor audit, and multi-agent checks still not enforced at backend level
 
 ### [Resolved] KI-12: Conversation transcripts never populated (breaks supervisor audit)
 - **Fixed in**: Phase 5 findings round
@@ -92,15 +95,17 @@
 - **Trade-off**: Frontend and backend must deploy together. For production, separating them (Firebase Hosting + CDN for static assets, Cloud Run for API) would improve caching and reduce backend load.
 - **Action needed**: None for MVP. Revisit post-hackathon if scaling requires CDN for static assets.
 
-### KI-9: 22 pre-existing ruff lint warnings
-- **Severity**: Low (code quality)
-- **Files**: `src/shared/types.py` (16 UP042), `src/api/webhooks.py` (5 B008 + 1 F821), `src/api/app.py` (1 F821)
-- **Description**: Pre-existing from Phase 2. UP042: `str, enum.Enum` should be `enum.StrEnum`. B008: FastAPI `Depends()` in arg defaults (standard FastAPI pattern, safe to suppress). F821: Forward references to `fastapi` and `Conversation` types.
-- **Action needed**: Suppress B008 in ruff config (standard FastAPI pattern). Migrate enums to StrEnum. Add missing imports for forward refs.
-
 ---
 
 ## Resolved Issues
+
+### [Resolved] KI-4: Cloud Tasks enqueue is a stub
+- **Fixed in**: Foundation Then Flood session
+- **Description**: `cloud_tasks_client.py` now implements an in-memory task store with background asyncio executor. Tasks are queued, dispatched on schedule, and POSTed to local worker endpoint. Real Cloud Tasks API still needed for production.
+
+### [Resolved] KI-9: 22 pre-existing ruff lint warnings
+- **Fixed in**: Foundation Then Flood session
+- **Description**: All enums migrated from `(str, enum.Enum)` to `StrEnum`. Forward reference imports fixed. 0 `ruff check` warnings.
 
 ### [Resolved] trial_id was UUID instead of String(100)
 - **Fixed in**: Phase 2 corrections round 1

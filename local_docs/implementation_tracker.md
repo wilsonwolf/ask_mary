@@ -1,7 +1,7 @@
 # Ask Mary — Implementation Tracker
 
 > Auto-updated at the end of each phase by the tracker enforcement hook.
-> Last updated: 2026-02-13 Phase 4/5 in progress.
+> Last updated: 2026-02-20 Phase 5+ Foundation Then Flood gap closure.
 
 ---
 
@@ -140,10 +140,40 @@
 | Task | Status | Files | Tests | Notes |
 |------|--------|-------|-------|-------|
 | 5.1 Seed demo data | DONE | scripts/seed_demo_data.py | — | Trial + participant seeded to Cloud SQL |
-| 5.2 ElevenLabs tool registration | NOT STARTED | scripts/register_elevenlabs_tools.py | — | Must run after deployment to register webhook tools |
+| 5.2 ElevenLabs tool registration | IN PROGRESS | scripts/register_elevenlabs_tools.py | — | Script updated to 14 tools (was 8), not yet run against live agent |
 | 5.3 Demo dry run | NOT STARTED | — | — | Full 60-second demo per demo_script.md |
 | 5.4 Safety escalation test | NOT STARTED | — | — | "chest pain" → handoff queue |
 | 5.5 Final demo run (SUCCESS) | NOT STARTED | — | — | Success gate for the project |
+
+---
+
+## Phase 5+ — Foundation Then Flood Gap Closure
+
+> 16 gaps closed across 3 rounds of parallel agents (2026-02-20)
+
+**Round 1 (7 parallel agents):**
+| Gap | Status | Description | Files | Tests |
+|-----|--------|-------------|-------|-------|
+| C1: Safety gate every-response | DONE | Updated ElevenLabs system prompt with "MANDATORY -- call before EVERY response" instruction | src/services/elevenlabs_client.py | tests/services/test_elevenlabs_client.py |
+| H5/H6/H7/M4: 4 new server tools | DONE | check_geo_eligibility, verify_teach_back, hold_slot, mark_wrong_person added as webhook tool handlers | src/api/webhooks.py, src/agents/screening.py, src/agents/scheduling.py, src/agents/identity.py | tests/api/test_webhooks.py |
+| H1: Comms cadence after booking | DONE | prep_instructions, confirmation_prompt, day_of_checkin, no_show_rescue scheduled via Cloud Tasks on booking | src/agents/comms.py, src/workers/reminders.py | tests/agents/test_comms.py, tests/workers/test_reminders.py |
+| H2: Transport reconfirmation | DONE | T-24h and T-2h reconfirm tasks scheduled on ride booking | src/agents/transport.py, src/services/cloud_tasks_client.py | tests/agents/test_transport.py, tests/services/test_cloud_tasks_client.py |
+| H3: Magic strings to StrEnum | DONE | All 18 enum classes migrated from (str, Enum) to StrEnum across all agents | src/shared/types.py, src/agents/*.py | tests/agents/*.py |
+| H4: Webhook return types | DONE | All webhook handlers return dict[str, Any] instead of untyped dicts | src/api/webhooks.py | tests/api/test_webhooks.py |
+| M3: Outreach retry cadence | DONE | OUTREACH_CADENCE constant + schedule_next_outreach() for multi-attempt retry | src/agents/outreach.py | tests/agents/test_outreach.py |
+
+**Round 2 (2 agents):**
+| Gap | Status | Description | Files | Tests |
+|-----|--------|-------------|-------|-------|
+| M7: AudioPlayer component | DONE | Frontend AudioPlayer component with signed URL integration for call playback | frontend/src/components/AudioPlayer.tsx | — |
+| M8: AnalyticsSummary widget | DONE | Dashboard analytics summary widget with auto-refresh | frontend/src/components/AnalyticsSummary.tsx | — |
+
+**Round 3 (3 agents):**
+| Gap | Status | Description | Files | Tests |
+|-----|--------|-------------|-------|-------|
+| M1: ElevenLabs Workflows API serializer | DONE | workflow_to_api_payload() converts pipeline config to API-compatible format | src/services/elevenlabs_workflows.py | tests/services/test_elevenlabs_client.py |
+| Outreach A: mark_call_outcome tool | DONE | Server tool for ElevenLabs agent to record call outcome before ending call | src/agents/outreach.py, src/api/webhooks.py | tests/agents/test_outreach.py |
+| Outreach B: Wire retry into call completion | DONE | handle_call_completion queries latest outcome event to trigger retry scheduling | src/api/webhooks.py | tests/api/test_webhooks.py |
 
 ---
 
@@ -155,10 +185,11 @@
 | Phase 2: Core Agents | 10 + 19 corrections | 29 | 0 | 0 |
 | Phase 3: Safety & Testing | 5 + 5 fixes | 10 | 0 | 0 |
 | Phase 4: Frontend & Polish | 5 + 5 WPs | 8 | 1 | 1 |
-| Phase 5: Demo Validation | 5 | 1 | 0 | 4 |
-| **Total** | **69** | **60** | **1** | **8** |
+| Phase 5: Demo Validation | 5 | 1 | 1 | 3 |
+| Phase 5+: Foundation Then Flood | 12 | 12 | 0 | 0 |
+| **Total** | **81** | **72** | **2** | **7** |
 
-**Test count: 339 passing, 2 skipped / 0 failing (12 DB integration errors require live DB)**
+**Test count: 529 passing, 2 skipped / 0 failing (12 DB integration errors require live DB)**
 
 ---
 
@@ -220,3 +251,7 @@ Phase 4 deploy → Phase 5 demo validation
 | Cloud Run deployed with min-instances=1 | Avoids cold start latency on webhook calls from ElevenLabs. Service URL: ask-mary-1030626458480.us-west2.run.app | 2026-02-12 |
 | Frontend served from Cloud Run (not Firebase) | StaticFiles mount in app.py + multi-stage Dockerfile (Node→Python). Eliminates CORS, separate deployment, and base URL config. See KI-11. | 2026-02-13 |
 | Cloud SQL Unix socket for Cloud Run | settings.py detects CLOUD_SQL_INSTANCE_CONNECTION → builds Unix socket URL. cloudbuild.yaml adds --add-cloudsql-instances. See KI-12 pending fix. | 2026-02-13 |
+| ElevenLabs Workflows payload serializer | workflow_to_api_payload() converts pipeline config to API-compatible format. Enables future migration to Workflows API. | 2026-02-20 |
+| StrEnum migration from (str, Enum) | All 18 enum classes now use StrEnum for cleaner type checking. Backward compatible (StrEnum == raw string). | 2026-02-20 |
+| In-memory Cloud Tasks executor for dev/demo | Background asyncio loop polls task store, POSTs to local worker endpoint. No external dependencies needed for local testing. | 2026-02-20 |
+| Call outcome detection for retry wiring | mark_call_outcome server tool called by ElevenLabs agent before ending call. handle_call_completion queries latest outcome event to trigger retry scheduling. | 2026-02-20 |

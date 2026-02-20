@@ -14,6 +14,8 @@ from agents import Agent, function_tool
 from src.db.events import log_event
 from src.db.models import Participant
 from src.db.postgres import get_participant_by_id
+from src.shared.response_models import DuplicateDetectionResult, IdentityVerificationResult
+from src.shared.types import IdentityStatus
 
 MAX_IDENTITY_ATTEMPTS = 2
 
@@ -23,7 +25,7 @@ async def verify_identity(
     participant_id: uuid.UUID,
     dob_year: int,
     zip_code: str,
-) -> dict:
+) -> IdentityVerificationResult:
     """Verify participant identity via DOB year and ZIP code.
 
     Tracks attempt count. After MAX_IDENTITY_ATTEMPTS failures,
@@ -37,11 +39,11 @@ async def verify_identity(
         zip_code: 5-digit ZIP code provided by participant.
 
     Returns:
-        Dict with 'verified' boolean or 'error' string.
+        IdentityVerificationResult with verification status.
     """
     participant = await get_participant_by_id(session, participant_id)
     if participant is None:
-        return {"error": "participant_not_found"}
+        return IdentityVerificationResult(verified=False, error="participant_not_found")
 
     expected_year = participant.date_of_birth.year
     expected_zip = participant.address_zip
@@ -53,14 +55,14 @@ async def verify_identity(
     participant.contactability = identity_data
 
     if dob_year == expected_year and zip_code == expected_zip:
-        participant.identity_status = "verified"
+        participant.identity_status = IdentityStatus.VERIFIED
         await log_event(
             session,
             participant_id=participant_id,
             event_type="identity_verified",
             provenance="patient_stated",
         )
-        return {"verified": True, "attempts": attempts}
+        return IdentityVerificationResult(verified=True, attempts=attempts)
 
     await log_event(
         session,
@@ -71,24 +73,24 @@ async def verify_identity(
     )
 
     if attempts >= MAX_IDENTITY_ATTEMPTS:
-        return {
-            "verified": False,
-            "reason": "max_attempts_exceeded",
-            "handoff_required": True,
-            "attempts": attempts,
-        }
+        return IdentityVerificationResult(
+            verified=False,
+            reason="max_attempts_exceeded",
+            handoff_required=True,
+            attempts=attempts,
+        )
 
-    return {
-        "verified": False,
-        "reason": "mismatch",
-        "attempts": attempts,
-    }
+    return IdentityVerificationResult(
+        verified=False,
+        reason="mismatch",
+        attempts=attempts,
+    )
 
 
 async def detect_duplicate(
     session: AsyncSession,
     participant_id: uuid.UUID,
-) -> dict:
+) -> DuplicateDetectionResult:
     """Check for duplicate participants matching DOB + ZIP + phone.
 
     Looks for other participants with the same date_of_birth,
@@ -99,11 +101,11 @@ async def detect_duplicate(
         participant_id: Participant UUID to check against.
 
     Returns:
-        Dict with 'is_duplicate' bool and list of matching IDs.
+        DuplicateDetectionResult with duplicate status and IDs.
     """
     participant = await get_participant_by_id(session, participant_id)
     if participant is None:
-        return {"error": "participant_not_found"}
+        return DuplicateDetectionResult(is_duplicate=False, error="participant_not_found")
 
     result = await session.execute(
         select(Participant.participant_id).where(
@@ -124,16 +126,16 @@ async def detect_duplicate(
             provenance="system",
         )
 
-    return {
-        "is_duplicate": len(duplicates) > 0,
-        "duplicate_ids": duplicates,
-    }
+    return DuplicateDetectionResult(
+        is_duplicate=len(duplicates) > 0,
+        duplicate_ids=duplicates,
+    )
 
 
 async def mark_wrong_person(
     session: AsyncSession,
     participant_id: uuid.UUID,
-) -> dict:
+) -> IdentityVerificationResult:
     """Mark participant as wrong person and suppress outreach.
 
     Args:
@@ -141,10 +143,10 @@ async def mark_wrong_person(
         participant_id: Participant UUID.
 
     Returns:
-        Dict confirming the marking.
+        IdentityVerificationResult confirming the marking.
     """
     participant = await get_participant_by_id(session, participant_id)
-    participant.identity_status = "wrong_person"
+    participant.identity_status = IdentityStatus.WRONG_PERSON
     flags = participant.dnc_flags or {}
     flags["all_channels"] = True
     participant.dnc_flags = flags
@@ -154,14 +156,16 @@ async def mark_wrong_person(
         event_type="wrong_person_marked",
         provenance="system",
     )
-    return {"marked": True}
+    return IdentityVerificationResult(
+        verified=False, marked=True, reason="wrong_person",
+    )
 
 
 async def update_identity_status(
     session: AsyncSession,
     participant_id: uuid.UUID,
     status: str,
-) -> dict:
+) -> IdentityVerificationResult:
     """Update participant identity verification status.
 
     Args:
@@ -170,11 +174,11 @@ async def update_identity_status(
         status: New identity status (unverified, verified, wrong_person).
 
     Returns:
-        Dict confirming the update.
+        IdentityVerificationResult confirming the update.
     """
     participant = await get_participant_by_id(session, participant_id)
     participant.identity_status = status
-    return {"updated": True}
+    return IdentityVerificationResult(verified=status == IdentityStatus.VERIFIED)
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

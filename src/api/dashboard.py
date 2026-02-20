@@ -8,6 +8,7 @@ demo trigger endpoint and a WebSocket for real-time event streaming.
 import logging
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -26,6 +27,14 @@ from src.db.models import (
 from src.db.postgres import get_participant_by_id
 from src.db.session import get_async_session
 from src.db.trials import get_trial
+from src.shared.types import (
+    AppointmentStatus,
+    Channel,
+    ConversationStatus,
+    Direction,
+    HandoffStatus,
+    Provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,13 +57,35 @@ class DemoCallRequest(BaseModel):
     trial_id: str
 
 
+class ResolveHandoffRequest(BaseModel):
+    """Request body for resolving a handoff ticket.
+
+    Attributes:
+        resolution: Description of how the handoff was resolved.
+        resolved_by: Name of the person who resolved it.
+    """
+
+    resolution: str
+    resolved_by: str
+
+
+class AssignHandoffRequest(BaseModel):
+    """Request body for assigning a handoff ticket.
+
+    Attributes:
+        assigned_to: Name of the coordinator to assign to.
+    """
+
+    assigned_to: str
+
+
 # --- List Endpoints ---
 
 
 @router.get("/participants")
 async def list_participants(
     session: AsyncSession = Depends(get_async_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List participants (limit 50).
 
     Args:
@@ -72,15 +103,15 @@ async def list_participants(
 async def get_participant(
     participant_id: str,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
-    """Get participant detail with trial enrollments.
+) -> dict[str, Any]:
+    """Get participant detail with nested related data.
 
     Args:
         participant_id: Participant UUID string.
         session: Injected database session.
 
     Returns:
-        Participant detail dict with trials.
+        Participant detail dict with trials, conversations, appointments.
     """
     participant = await get_participant_by_id(
         session, uuid.UUID(participant_id),
@@ -88,21 +119,45 @@ async def get_participant(
     if participant is None:
         return {"error": "not_found"}
     detail = _serialize_participant(participant)
-    detail["trials"] = [
-        {
-            "trial_id": pt.trial_id,
-            "pipeline_status": pt.pipeline_status,
-            "eligibility_status": pt.eligibility_status,
-        }
-        for pt in participant.trials
-    ]
+    detail["trials"] = _serialize_trials(participant.trials)
+    detail["conversations"] = _serialize_recent_conversations(
+        participant.conversations,
+    )
+    detail["appointments"] = _serialize_upcoming_appointments(
+        participant.appointments,
+    )
     return detail
+
+
+@router.get("/participants/{participant_id}/adversarial-status")
+async def get_adversarial_status(
+    participant_id: str,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Get adversarial check status for a participant.
+
+    Args:
+        participant_id: Participant UUID string.
+        session: Injected database session.
+
+    Returns:
+        Adversarial check status and results.
+    """
+    result = await session.execute(
+        select(ParticipantTrial).where(
+            ParticipantTrial.participant_id == uuid.UUID(participant_id),
+        )
+    )
+    participant_trial = result.scalars().first()
+    if participant_trial is None:
+        return {"check_status": "pending"}
+    return _build_adversarial_response(participant_trial)
 
 
 @router.get("/appointments")
 async def list_appointments(
     session: AsyncSession = Depends(get_async_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List appointments with status.
 
     Args:
@@ -119,7 +174,7 @@ async def list_appointments(
 @router.get("/handoff-queue")
 async def list_handoffs(
     session: AsyncSession = Depends(get_async_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List active handoff tickets.
 
     Args:
@@ -133,10 +188,66 @@ async def list_handoffs(
     return [_serialize_handoff(h) for h in rows]
 
 
+@router.post("/handoffs/{handoff_id}/resolve")
+async def resolve_handoff(
+    handoff_id: str,
+    request: ResolveHandoffRequest,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Resolve a handoff ticket with resolution details.
+
+    Args:
+        handoff_id: Handoff UUID string.
+        request: Resolution details and resolver name.
+        session: Injected database session.
+
+    Returns:
+        Updated handoff dict with resolved status.
+    """
+    result = await session.execute(
+        select(HandoffQueue).where(
+            HandoffQueue.handoff_id == uuid.UUID(handoff_id),
+        )
+    )
+    handoff = result.scalar_one_or_none()
+    if handoff is None:
+        return {"error": "handoff_not_found"}
+    return _apply_resolution(handoff, request)
+
+
+@router.post("/handoffs/{handoff_id}/assign")
+async def assign_handoff(
+    handoff_id: str,
+    request: AssignHandoffRequest,
+    session: AsyncSession = Depends(get_async_session),
+) -> dict[str, Any]:
+    """Assign a handoff ticket to a coordinator.
+
+    Args:
+        handoff_id: Handoff UUID string.
+        request: Assignment details.
+        session: Injected database session.
+
+    Returns:
+        Updated handoff dict with assigned status.
+    """
+    result = await session.execute(
+        select(HandoffQueue).where(
+            HandoffQueue.handoff_id == uuid.UUID(handoff_id),
+        )
+    )
+    handoff = result.scalar_one_or_none()
+    if handoff is None:
+        return {"error": "handoff_not_found"}
+    handoff.assigned_to = request.assigned_to
+    handoff.status = HandoffStatus.ASSIGNED
+    return _serialize_handoff(handoff)
+
+
 @router.get("/conversations")
 async def list_conversations(
     session: AsyncSession = Depends(get_async_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """List recent conversations.
 
     Args:
@@ -155,7 +266,7 @@ async def list_events(
     limit: int = 50,
     offset: int = 0,
     session: AsyncSession = Depends(get_async_session),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Paginated events feed.
 
     Args:
@@ -174,7 +285,7 @@ async def list_events(
 @router.get("/analytics/summary")
 async def analytics_summary(
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, int]:
     """Aggregate stats from Postgres (Databricks stubbed).
 
     Args:
@@ -192,7 +303,7 @@ async def analytics_summary(
     open_handoffs = (
         await session.execute(
             select(func.count(HandoffQueue.handoff_id)).where(
-                HandoffQueue.status == "open",
+                HandoffQueue.status == HandoffStatus.OPEN,
             )
         )
     ).scalar()
@@ -201,6 +312,21 @@ async def analytics_summary(
         "total_appointments": total_appointments or 0,
         "open_handoffs": open_handoffs or 0,
     }
+
+
+# --- Scheduled Tasks ---
+
+
+@router.get("/tasks")
+async def list_pending_tasks() -> list[dict[str, object]]:
+    """List all in-memory scheduled tasks with their status.
+
+    Returns:
+        List of task dicts with task_id, template_id, status, send_at.
+    """
+    from src.services.cloud_tasks_client import get_pending_tasks
+
+    return await get_pending_tasks()
 
 
 # --- Trial Config ---
@@ -221,7 +347,7 @@ async def update_trial_coordinator(
     trial_id: str,
     request: UpdateTrialCoordinatorRequest,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Update the coordinator phone for a trial.
 
     Allows dashboard users to set or override the coordinator
@@ -253,7 +379,7 @@ async def update_trial_coordinator(
 @router.get("/demo/config")
 async def get_demo_config(
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Return demo participant and trial info for the frontend.
 
     Looks up the demo participant by the configured phone number
@@ -305,7 +431,7 @@ async def get_demo_config(
 async def start_demo_call(
     request: DemoCallRequest,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Trigger an outbound demo call via ElevenLabs.
 
     Looks up the participant's phone number, then calls the
@@ -344,8 +470,8 @@ async def start_demo_call(
             "conversation_id": call_result.get("conversation_id"),
             "status": call_result.get("status"),
         },
-        provenance="system",
-        channel="voice",
+        provenance=Provenance.SYSTEM,
+        channel=Channel.VOICE,
     )
 
     event_id = str(event.event_id) if event else str(uuid.uuid4())
@@ -371,7 +497,7 @@ async def _call_elevenlabs(
     participant: Participant,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> dict[str, Any]:
     """Assemble full context and call ElevenLabs outbound API.
 
     Mirrors the context assembly from the outreach agent:
@@ -427,9 +553,9 @@ async def _call_elevenlabs(
     conversation = Conversation(
         participant_id=participant_id,
         trial_id=trial_id,
-        channel="voice",
-        direction="outbound",
-        status="initiating",
+        channel=Channel.VOICE,
+        direction=Direction.OUTBOUND,
+        status=ConversationStatus.ACTIVE,
     )
     session.add(conversation)
     await session.flush()
@@ -453,7 +579,7 @@ async def _call_elevenlabs(
     )
 
     conversation.call_sid = call_result.conversation_id
-    conversation.status = "active"
+    conversation.status = ConversationStatus.ACTIVE
 
     return {
         "status": call_result.status,
@@ -485,7 +611,7 @@ async def websocket_events(websocket: WebSocket) -> None:
 # --- Serializers ---
 
 
-def _serialize_participant(participant: Participant) -> dict:
+def _serialize_participant(participant: Participant) -> dict[str, Any]:
     """Convert Participant ORM to API dict.
 
     Args:
@@ -504,7 +630,7 @@ def _serialize_participant(participant: Participant) -> dict:
     }
 
 
-def _serialize_appointment(appointment: Appointment) -> dict:
+def _serialize_appointment(appointment: Appointment) -> dict[str, Any]:
     """Convert Appointment ORM to API dict.
 
     Args:
@@ -524,7 +650,7 @@ def _serialize_appointment(appointment: Appointment) -> dict:
     }
 
 
-def _serialize_handoff(handoff: HandoffQueue) -> dict:
+def _serialize_handoff(handoff: HandoffQueue) -> dict[str, Any]:
     """Convert HandoffQueue ORM to API dict.
 
     Args:
@@ -541,11 +667,12 @@ def _serialize_handoff(handoff: HandoffQueue) -> dict:
         "status": handoff.status,
         "summary": handoff.summary,
         "coordinator_phone": handoff.coordinator_phone,
+        "assigned_to": handoff.assigned_to,
         "created_at": str(handoff.created_at),
     }
 
 
-def _serialize_conversation(conversation: Conversation) -> dict:
+def _serialize_conversation(conversation: Conversation) -> dict[str, Any]:
     """Convert Conversation ORM to API dict.
 
     Args:
@@ -564,7 +691,7 @@ def _serialize_conversation(conversation: Conversation) -> dict:
     }
 
 
-def _serialize_event(event: Event) -> dict:
+def _serialize_event(event: Event) -> dict[str, Any]:
     """Convert Event ORM to API dict.
 
     Args:
@@ -581,3 +708,101 @@ def _serialize_event(event: Event) -> dict:
         "payload": event.payload,
         "created_at": str(event.created_at),
     }
+
+
+def _serialize_trials(trials: list[ParticipantTrial]) -> list[dict[str, Any]]:
+    """Serialize trial enrollments for participant detail.
+
+    Args:
+        trials: List of ParticipantTrial ORM instances.
+
+    Returns:
+        List of trial enrollment dicts.
+    """
+    return [
+        {
+            "trial_id": pt.trial_id,
+            "pipeline_status": pt.pipeline_status,
+            "eligibility_status": pt.eligibility_status,
+        }
+        for pt in trials
+    ]
+
+
+def _serialize_recent_conversations(
+    conversations: list[Conversation],
+) -> list[dict[str, Any]]:
+    """Serialize last 10 conversations for participant detail.
+
+    Args:
+        conversations: List of Conversation ORM instances.
+
+    Returns:
+        List of conversation dicts (most recent 10).
+    """
+    recent = sorted(
+        conversations,
+        key=lambda c: str(c.started_at),
+        reverse=True,
+    )[:10]
+    return [_serialize_conversation(c) for c in recent]
+
+
+def _serialize_upcoming_appointments(
+    appointments: list[Appointment],
+) -> list[dict[str, Any]]:
+    """Serialize upcoming appointments for participant detail.
+
+    Args:
+        appointments: List of Appointment ORM instances.
+
+    Returns:
+        List of appointment dicts with non-terminal status.
+    """
+    active_statuses = {
+        AppointmentStatus.HELD,
+        AppointmentStatus.BOOKED,
+        AppointmentStatus.CONFIRMED,
+    }
+    upcoming = [
+        a for a in appointments if str(a.status) in active_statuses
+    ]
+    return [_serialize_appointment(a) for a in upcoming]
+
+
+def _build_adversarial_response(
+    participant_trial: ParticipantTrial,
+) -> dict[str, Any]:
+    """Build adversarial check status response.
+
+    Args:
+        participant_trial: ParticipantTrial ORM instance.
+
+    Returns:
+        Dict with check_status and optional result details.
+    """
+    results = participant_trial.adversarial_results
+    if not results:
+        return {"check_status": "pending"}
+    return {"check_status": "complete", **results}
+
+
+def _apply_resolution(
+    handoff: HandoffQueue,
+    request: ResolveHandoffRequest,
+) -> dict[str, Any]:
+    """Apply resolution to a handoff ticket and return response.
+
+    Args:
+        handoff: HandoffQueue ORM instance to resolve.
+        request: Resolution details from the API request.
+
+    Returns:
+        Updated handoff dict with resolution fields.
+    """
+    handoff.status = HandoffStatus.RESOLVED
+    handoff.resolved_at = datetime.now(UTC)
+    result = _serialize_handoff(handoff)
+    result["resolution"] = request.resolution
+    result["resolved_by"] = request.resolved_by
+    return result

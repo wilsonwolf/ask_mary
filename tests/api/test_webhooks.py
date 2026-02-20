@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.app import create_app
 from src.db.session import get_async_session
+from src.shared.types import HandoffReason, HandoffSeverity
 
 
 @pytest.fixture
@@ -46,6 +47,11 @@ class TestServerToolEndpoint:
 
         with (
             patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
                 "src.api.webhooks.verify_identity",
                 new_callable=AsyncMock,
                 return_value=mock_result,
@@ -80,35 +86,121 @@ class TestServerToolEndpoint:
         """verify_identity with empty dob_year returns error, not 500."""
         participant_id = str(uuid.uuid4())
 
-        transport = ASGITransport(app=app)
-        async with AsyncClient(
-            transport=transport,
-            base_url="http://test",
-        ) as client:
-            response = await client.post(
-                "/webhooks/elevenlabs/server-tool",
-                json={
-                    "tool_name": "verify_identity",
-                    "conversation_id": "conv-123",
-                    "parameters": {
-                        "participant_id": participant_id,
-                        "dob_year": "",
-                        "zip_code": "97201",
+        with patch(
+            "src.api.webhooks._enforce_pre_checks",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "verify_identity",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "dob_year": "",
+                            "zip_code": "97201",
+                        },
                     },
-                },
-            )
+                )
         assert response.status_code == 200
         data = response.json()
         assert data["verified"] is False
         assert "error" in data
+
+    async def test_gated_tool_blocked_by_dnc(self, app) -> None:
+        """Gated tool returns error when DNC gate fails."""
+        participant_id = str(uuid.uuid4())
+
+        with patch(
+            "src.api.webhooks._enforce_pre_checks",
+            new_callable=AsyncMock,
+            return_value={"error": "dnc_blocked", "channel": "voice"},
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "verify_identity",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "dob_year": "1985",
+                            "zip_code": "97201",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["error"] == "dnc_blocked"
+
+    async def test_ungated_tool_skips_pre_checks(self, app) -> None:
+        """safety_check (ungated) does not call _enforce_pre_checks."""
+        participant_id = str(uuid.uuid4())
+        mock_result = MagicMock()
+        mock_result.triggered = False
+        mock_result.trigger_type = None
+        mock_result.severity = None
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+            ) as mock_gate,
+            patch(
+                "src.api.webhooks.run_safety_gate",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks._resolve_call_sid",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks._log_agent_reasoning",
+                new_callable=AsyncMock,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "safety_check",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "response": "I feel fine",
+                        },
+                    },
+                )
+        mock_gate.assert_not_called()
 
     async def test_safety_check_routes(self, app) -> None:
         """safety_check tool calls the safety service."""
         participant_id = str(uuid.uuid4())
         mock_result = MagicMock()
         mock_result.triggered = True
-        mock_result.trigger_type = "severe_symptoms"
-        mock_result.severity = "HANDOFF_NOW"
+        mock_result.trigger_type = HandoffReason.SEVERE_SYMPTOMS
+        mock_result.severity = HandoffSeverity.HANDOFF_NOW
 
         with (
             patch(
@@ -125,6 +217,10 @@ class TestServerToolEndpoint:
                 "src.api.webhooks._resolve_call_sid",
                 new_callable=AsyncMock,
                 return_value=None,
+            ),
+            patch(
+                "src.api.webhooks._log_agent_reasoning",
+                new_callable=AsyncMock,
             ),
         ):
             transport = ASGITransport(app=app)
@@ -146,7 +242,7 @@ class TestServerToolEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["triggered"] is True
-        assert data["severity"] == "HANDOFF_NOW"
+        assert data["severity"] == HandoffSeverity.HANDOFF_NOW
 
 
 class TestDtmfEndpoint:
@@ -600,6 +696,51 @@ class TestCaptureConsent:
         assert mock_participant.consent["consent_to_continue"] is True
 
 
+class TestGetVerificationPrompts:
+    """get_verification_prompts server tool webhook."""
+
+    async def test_get_verification_prompts_returns_results(
+        self, app,
+    ) -> None:
+        """get_verification_prompts returns prompts from adversarial check."""
+        from src.shared.response_models import VerificationPromptsResult
+        from src.shared.types import AdversarialCheckStatus
+
+        participant_id = str(uuid.uuid4())
+        mock_result = VerificationPromptsResult(
+            check_status=AdversarialCheckStatus.COMPLETE,
+            prompts=["Could you confirm your date of birth one more time?"],
+            discrepancies=[{"field": "dob", "stated": "1990", "ehr": "1985"}],
+        )
+
+        with patch(
+            "src.agents.adversarial.generate_verification_prompts",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_gen:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "get_verification_prompts",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-42",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["check_status"] == "complete"
+        assert len(data["prompts"]) == 1
+        mock_gen.assert_awaited_once()
+
+
 class TestSignedUrlEndpoint:
     """Audio signed URL generation."""
 
@@ -622,6 +763,39 @@ class TestSignedUrlEndpoint:
         data = response.json()
         assert data["url"] == "https://storage.googleapis.com/signed"
         assert data["ttl_seconds"] == 3600
+
+    async def test_missing_gcs_path_returns_422(self, app) -> None:
+        """Missing gcs_path in request body returns validation error."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/webhooks/audio/signed-url",
+                json={},
+            )
+        assert response.status_code == 422
+
+    async def test_signed_url_calls_generate(self, app) -> None:
+        """Endpoint delegates to generate_signed_url with correct args."""
+        with patch(
+            "src.api.webhooks.generate_signed_url",
+            return_value="https://storage.googleapis.com/bucket/obj?sig=abc",
+        ) as mock_gen:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/audio/signed-url",
+                    json={"gcs_path": "conversations/conv-123/audio.webm"},
+                )
+        assert response.status_code == 200
+        mock_gen.assert_called_once()
+        call_args = mock_gen.call_args
+        assert call_args[0][1] == "conversations/conv-123/audio.webm"
 
 
 class TestTwilioStatusCallback:
@@ -670,3 +844,377 @@ class TestTwilioStatusCallback:
             )
         assert response.status_code == 200
         assert response.json()["updated"] is False
+
+
+class TestCheckGeoEligibility:
+    """check_geo_eligibility server tool webhook."""
+
+    async def test_eligible_returns_result(self, app) -> None:
+        """Eligible participant returns geo result without handoff."""
+        from src.shared.response_models import GeoEligibilityResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = GeoEligibilityResult(
+            eligible=True, distance_km=25.0,
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.check_geo_eligibility",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.create_handoff",
+                new_callable=AsyncMock,
+            ) as mock_handoff,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_geo_eligibility",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["eligible"] is True
+        mock_handoff.assert_not_called()
+
+    async def test_ineligible_creates_handoff(self, app) -> None:
+        """Ineligible participant triggers handoff creation."""
+        from src.shared.response_models import GeoEligibilityResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = GeoEligibilityResult(
+            eligible=False, distance_km=150.0, max_km=80.0,
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.check_geo_eligibility",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.create_handoff",
+                new_callable=AsyncMock,
+            ) as mock_handoff,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_geo_eligibility",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["eligible"] is False
+        mock_handoff.assert_called_once()
+
+
+class TestVerifyTeachBack:
+    """verify_teach_back server tool webhook."""
+
+    async def test_passed_teach_back(self, app) -> None:
+        """Successful teach-back returns passed=True."""
+        from src.shared.response_models import TeachBackResult
+
+        participant_id = str(uuid.uuid4())
+        appointment_id = str(uuid.uuid4())
+        mock_result = TeachBackResult(
+            passed=True, attempts=1,
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.verify_teach_back",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "verify_teach_back",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "appointment_id": appointment_id,
+                            "date_response": "January 15th",
+                            "time_response": "9 AM",
+                            "location_response": "City Hospital",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["passed"] is True
+        assert data["attempts"] == 1
+
+    async def test_failed_teach_back(self, app) -> None:
+        """Failed teach-back returns passed=False."""
+        from src.shared.response_models import TeachBackResult
+
+        participant_id = str(uuid.uuid4())
+        appointment_id = str(uuid.uuid4())
+        mock_result = TeachBackResult(
+            passed=False, handoff_required=True, attempts=2,
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.verify_teach_back",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "verify_teach_back",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "appointment_id": appointment_id,
+                            "date_response": "Monday",
+                            "time_response": "afternoon",
+                            "location_response": "somewhere",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["passed"] is False
+        assert data["handoff_required"] is True
+
+
+class TestHoldSlot:
+    """hold_slot server tool webhook."""
+
+    async def test_hold_slot_success(self, app) -> None:
+        """Successful slot hold returns held=True."""
+        from src.shared.response_models import SlotHoldResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = SlotHoldResult(
+            held=True, appointment_id=str(uuid.uuid4()),
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.hold_slot",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "hold_slot",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                            "slot_datetime": "2026-03-01T09:00:00",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["held"] is True
+        assert data["appointment_id"] is not None
+
+    async def test_hold_slot_taken(self, app) -> None:
+        """Slot already taken returns held=False."""
+        from src.shared.response_models import SlotHoldResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = SlotHoldResult(
+            held=False, error="slot_taken",
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.hold_slot",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "hold_slot",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                            "slot_datetime": "2026-03-01T09:00:00",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["held"] is False
+        assert data["error"] == "slot_taken"
+
+
+class TestMarkCallOutcome:
+    """mark_call_outcome server tool webhook."""
+
+    async def test_mark_call_outcome_handler(self, app) -> None:
+        """mark_call_outcome routes to outreach agent and returns result."""
+        from src.shared.response_models import CallOutcomeResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = CallOutcomeResult(
+            recorded=True,
+            outcome="no_answer",
+            should_retry=True,
+            next_attempt=1,
+        )
+
+        with patch(
+            "src.api.webhooks.mark_call_outcome",
+            new_callable=AsyncMock,
+            return_value=mock_result,
+        ) as mock_fn:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "mark_call_outcome",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                            "outcome": "no_answer",
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["recorded"] is True
+        assert data["outcome"] == "no_answer"
+        assert data["should_retry"] is True
+        assert data["next_attempt"] == 1
+        mock_fn.assert_awaited_once()
+
+
+class TestMarkWrongPerson:
+    """mark_wrong_person server tool webhook."""
+
+    async def test_mark_wrong_person_success(self, app) -> None:
+        """Wrong person marking returns verified=False, marked=True."""
+        from src.shared.response_models import IdentityVerificationResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = IdentityVerificationResult(
+            verified=False, marked=True, reason="wrong_person",
+        )
+
+        with (
+            patch(
+                "src.api.webhooks._enforce_pre_checks",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks.mark_wrong_person",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "mark_wrong_person",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                        },
+                    },
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["verified"] is False
+        assert data["marked"] is True
+        assert data["reason"] == "wrong_person"

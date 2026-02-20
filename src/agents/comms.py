@@ -14,8 +14,14 @@ from agents import Agent, function_tool
 from src.db.events import log_event
 from src.services.cloud_tasks_client import enqueue_reminder
 from src.shared.comms import render_template
+from src.shared.response_models import CommunicationResult, ReminderResult
+from src.shared.types import Channel, Provenance
 
-CHANNEL_FALLBACK = {"voice": "sms", "sms": "whatsapp", "whatsapp": "sms"}
+CHANNEL_FALLBACK = {
+    Channel.VOICE: Channel.SMS,
+    Channel.SMS: Channel.WHATSAPP,
+    Channel.WHATSAPP: Channel.SMS,
+}
 
 
 async def send_communication(
@@ -25,7 +31,7 @@ async def send_communication(
     channel: str,
     variables: dict,
     idempotency_key: str | None = None,
-) -> dict:
+) -> CommunicationResult:
     """Send a templated communication to a participant.
 
     Uses idempotency keys to prevent duplicate sends.
@@ -39,7 +45,7 @@ async def send_communication(
         idempotency_key: Optional dedup key for outbound actions.
 
     Returns:
-        Dict confirming the communication was sent.
+        CommunicationResult confirming the communication was sent.
     """
     idem_key = idempotency_key or (f"comms-{participant_id}-{template_id}-{channel}")
     rendered = render_template(template_id, **variables)
@@ -49,15 +55,13 @@ async def send_communication(
         event_type="communication_sent",
         channel=channel,
         payload={"template_id": template_id, "rendered": rendered},
-        provenance="system",
+        provenance=Provenance.SYSTEM,
         idempotency_key=idem_key,
     )
-    return {
-        "sent": True,
-        "template_id": template_id,
-        "channel": channel,
-        "idempotency_key": idem_key,
-    }
+    return CommunicationResult(
+        sent=True,
+        channel=Channel(channel),
+    )
 
 
 async def schedule_reminder(
@@ -67,7 +71,7 @@ async def schedule_reminder(
     template_id: str,
     channel: str,
     send_at: datetime,
-) -> dict:
+) -> ReminderResult:
     """Schedule a reminder for future delivery via Cloud Tasks.
 
     Logs the scheduling event with an idempotency key. In production,
@@ -82,7 +86,7 @@ async def schedule_reminder(
         send_at: Scheduled send datetime.
 
     Returns:
-        Dict confirming the reminder was scheduled.
+        ReminderResult confirming the reminder was scheduled.
     """
     idem_key = f"reminder-{appointment_id}-{template_id}-{channel}"
     task_result = await enqueue_reminder(
@@ -104,23 +108,21 @@ async def schedule_reminder(
             "send_at": send_at.isoformat(),
             "task_id": task_result.task_id,
         },
-        provenance="system",
+        provenance=Provenance.SYSTEM,
         idempotency_key=idem_key,
     )
-    return {
-        "scheduled": True,
-        "send_at": send_at.isoformat(),
-        "task_id": task_result.task_id,
-        "idempotency_key": idem_key,
-    }
+    return ReminderResult(
+        scheduled=True,
+        task_id=task_result.task_id,
+    )
 
 
 async def handle_unreachable(
     session: AsyncSession,
     participant_id: uuid.UUID,
     failed_channel: str,
-) -> dict:
-    """Handle unreachable participant — channel switch then escalate.
+) -> CommunicationResult:
+    """Handle unreachable participant -- channel switch then escalate.
 
     Tries the fallback channel before escalating to coordinator.
 
@@ -130,7 +132,7 @@ async def handle_unreachable(
         failed_channel: Channel that failed to reach participant.
 
     Returns:
-        Dict with fallback channel or escalation status.
+        CommunicationResult with fallback channel or escalation status.
     """
     fallback = CHANNEL_FALLBACK.get(failed_channel)
     await log_event(
@@ -142,13 +144,13 @@ async def handle_unreachable(
             "failed_channel": failed_channel,
             "fallback_channel": fallback,
         },
-        provenance="system",
+        provenance=Provenance.SYSTEM,
     )
-    return {
-        "escalated": True,
-        "failed_channel": failed_channel,
-        "fallback_channel": fallback,
-    }
+    return CommunicationResult(
+        sent=False,
+        channel=Channel(fallback) if fallback else None,
+        error=f"unreachable_on_{failed_channel}",
+    )
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

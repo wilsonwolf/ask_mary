@@ -15,16 +15,23 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Form, Query
 from pydantic import BaseModel
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.agents.identity import detect_duplicate, verify_identity
-from src.agents.scheduling import book_appointment, find_available_slots
+from src.agents.comms import schedule_reminder
+from src.agents.identity import detect_duplicate, mark_wrong_person, verify_identity
+from src.agents.outreach import mark_call_outcome, schedule_next_outreach
+from src.agents.scheduling import (
+    book_appointment,
+    check_geo_eligibility,
+    find_available_slots,
+    hold_slot,
+    verify_teach_back,
+)
 from src.agents.screening import (
     check_hard_excludes,
     determine_eligibility,
@@ -35,7 +42,8 @@ from src.agents.transport import book_transport
 from src.api.event_bus import broadcast_event
 from src.config.settings import get_settings
 from src.db.events import log_event
-from src.db.postgres import get_participant_by_id
+from src.db.models import AgentReasoning, Event
+from src.db.postgres import create_handoff, get_participant_by_id, get_participant_trial
 from src.db.session import get_async_session
 from src.services.gcs_client import (
     build_object_path,
@@ -43,13 +51,46 @@ from src.services.gcs_client import (
     upload_audio,
 )
 from src.services.safety_service import run_safety_gate
+from src.shared.types import (
+    Channel,
+    ConversationStatus,
+    Direction,
+    HandoffReason,
+    HandoffSeverity,
+    PipelineStatus,
+    Provenance,
+)
+from src.shared.validators import _enforce_pre_checks
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
     from src.db.models import Conversation
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
+
+# Tools that require DNC + disclosure + consent gates before execution.
+# capture_consent is excluded (it IS the consent mechanism).
+# safety_check is excluded (independent safety evaluation).
+GATED_TOOLS: frozenset[str] = frozenset({
+    "verify_identity",
+    "detect_duplicate",
+    "get_screening_criteria",
+    "check_hard_excludes",
+    "determine_eligibility",
+    "record_screening_response",
+    "record_screening_answer",
+    "check_eligibility",
+    "check_availability",
+    "book_appointment",
+    "book_transport",
+    "check_geo_eligibility",
+    "verify_teach_back",
+    "hold_slot",
+    "mark_wrong_person",
+})
 
 
 class ServerToolRequest(BaseModel):
@@ -63,7 +104,7 @@ class ServerToolRequest(BaseModel):
 
     tool_name: str
     conversation_id: str
-    parameters: dict
+    parameters: dict[str, Any]
 
 
 class DtmfWebhookPayload(BaseModel):
@@ -87,9 +128,9 @@ class DtmfWebhookPayload(BaseModel):
 
 @router.post("/elevenlabs/server-tool")
 async def handle_server_tool(
-    body: dict,
+    body: dict[str, Any],
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Handle ElevenLabs server tool callbacks.
 
     Accepts both our canonical format (tool_name + parameters dict)
@@ -125,6 +166,22 @@ async def handle_server_tool(
         return {"error": f"unknown_tool: {tool_name}"}
 
     params["_conversation_id"] = conversation_id
+
+    if tool_name in GATED_TOOLS:
+        participant_id_str = params.get("participant_id")
+        if participant_id_str:
+            try:
+                gate_participant_id = uuid.UUID(participant_id_str)
+            except ValueError:
+                return {"error": f"Invalid participant_id: {participant_id_str}"}
+            gate_error = await _enforce_pre_checks(
+                session,
+                gate_participant_id,
+                Channel.VOICE,
+            )
+            if gate_error is not None:
+                return gate_error
+
     try:
         return await handler(session, params)
     except (ValueError, KeyError, TypeError) as exc:
@@ -172,11 +229,110 @@ async def _resolve_call_sid(
     return None
 
 
+async def _resolve_conversation_row(
+    session: AsyncSession,
+    conversation_id_str: str | None,
+) -> Conversation | None:
+    """Resolve a Conversation model row from ElevenLabs conversation_id.
+
+    Args:
+        session: Active database session.
+        conversation_id_str: ElevenLabs conversation ID string.
+
+    Returns:
+        Conversation model instance or None if not found.
+    """
+    if not conversation_id_str:
+        return None
+    from src.db.models import Conversation
+
+    result = await session.execute(
+        select(Conversation).where(
+            Conversation.call_sid == conversation_id_str,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _log_agent_reasoning(
+    session: AsyncSession,
+    conversation_id_str: str | None,
+    participant_id: uuid.UUID,
+    agent_name: str,
+    reasoning_data: dict[str, Any],
+) -> None:
+    """Persist an agent reasoning trace to the database.
+
+    Non-fatal: logs warning and continues if conversation row
+    cannot be resolved or the insert fails.
+
+    Args:
+        session: Active database session.
+        conversation_id_str: ElevenLabs conversation ID string.
+        participant_id: Participant UUID.
+        agent_name: Name of the agent making the decision.
+        reasoning_data: Decision data to persist as JSON.
+    """
+    conversation = await _resolve_conversation_row(
+        session,
+        conversation_id_str,
+    )
+    if conversation is None:
+        logger.debug(
+            "agent_reasoning_skipped_no_conversation",
+            extra={"conversation_id": conversation_id_str},
+        )
+        return
+    reasoning = AgentReasoning(
+        conversation_id=conversation.conversation_id,
+        participant_id=participant_id,
+        agent_name=agent_name,
+        reasoning_trace=reasoning_data,
+    )
+    session.add(reasoning)
+
+
+async def _update_pipeline_status(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str | None,
+    new_status: str,
+) -> None:
+    """Update the pipeline_status on a ParticipantTrial row.
+
+    Non-fatal: logs warning and continues if the enrollment
+    record is not found.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+        new_status: New PipelineStatus enum value.
+    """
+    if not trial_id:
+        return
+    participant_trial = await get_participant_trial(
+        session,
+        participant_id,
+        trial_id,
+    )
+    if participant_trial is None:
+        logger.debug(
+            "pipeline_status_update_skipped",
+            extra={
+                "participant_id": str(participant_id),
+                "trial_id": trial_id,
+            },
+        )
+        return
+    participant_trial.pipeline_status = new_status
+
+
 async def _log_and_broadcast(
     session: AsyncSession,
     participant_id: uuid.UUID,
     event_type: str,
-    payload: dict,
+    payload: dict[str, Any],
     trial_id: str | None = None,
 ) -> None:
     """Persist a canonical event and broadcast via WebSocket.
@@ -194,8 +350,8 @@ async def _log_and_broadcast(
         event_type=event_type,
         trial_id=trial_id,
         payload=payload,
-        provenance="system",
-        channel="voice",
+        provenance=Provenance.SYSTEM,
+        channel=Channel.VOICE,
     )
     if event is None:
         return
@@ -216,8 +372,8 @@ async def _log_and_broadcast(
 
 async def _handle_verify_identity(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle identity verification server tool call.
 
     Args:
@@ -248,7 +404,8 @@ async def _handle_verify_identity(
         dob_year,
         zip_raw,
     )
-    event_type = "identity_verified" if result.get("verified") else "identity_failed"
+    is_verified = result.get("verified", False)
+    event_type = "identity_verified" if is_verified else "identity_failed"
     await _log_and_broadcast(
         session,
         participant_id,
@@ -256,13 +413,20 @@ async def _handle_verify_identity(
         result,
         trial_id=params.get("trial_id"),
     )
+    if is_verified:
+        await _update_pipeline_status(
+            session,
+            participant_id,
+            params.get("trial_id"),
+            PipelineStatus.SCREENING,
+        )
     return result
 
 
 async def _handle_detect_duplicate(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle duplicate detection server tool call.
 
     Args:
@@ -286,8 +450,8 @@ async def _handle_detect_duplicate(
 
 async def _handle_get_screening_criteria(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle trial criteria lookup server tool call.
 
     Read-only lookup — no business event persisted or broadcast.
@@ -304,8 +468,8 @@ async def _handle_get_screening_criteria(
 
 async def _handle_check_hard_excludes(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle hard exclude check server tool call.
 
     Intermediate check — no business event persisted or broadcast.
@@ -327,8 +491,8 @@ async def _handle_check_hard_excludes(
 
 async def _handle_determine_eligibility(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle eligibility determination server tool call.
 
     Args:
@@ -361,13 +525,51 @@ async def _handle_determine_eligibility(
         payload,
         trial_id=trial_id,
     )
+    is_eligible = result.get("eligible", False)
+    if event_type != "screening_error":
+        new_status = (
+            PipelineStatus.SCHEDULING
+            if is_eligible
+            else PipelineStatus.INELIGIBLE
+        )
+        await _update_pipeline_status(
+            session,
+            participant_id,
+            trial_id,
+            new_status,
+        )
+    await _log_agent_reasoning(
+        session,
+        params.get("_conversation_id"),
+        participant_id,
+        "screening",
+        {
+            "decision": "eligibility_determination",
+            "eligible": is_eligible,
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "trial_id": trial_id,
+        },
+    )
+    try:
+        import asyncio as _asyncio
+
+        from src.agents.adversarial import (
+            generate_verification_prompts as _gen_prompts,
+        )
+
+        _asyncio.create_task(
+            _gen_prompts(session, participant_id, trial_id),
+        )
+    except Exception:
+        logger.warning("adversarial_background_task_failed_to_start")
     return result
 
 
 async def _handle_record_screening_response(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle screening response recording server tool call.
 
     Args:
@@ -402,8 +604,8 @@ async def _handle_record_screening_response(
 
 async def _handle_check_availability(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle availability check server tool call.
 
     Args:
@@ -438,8 +640,8 @@ async def _handle_check_availability(
 
 async def _handle_book_appointment(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle appointment booking server tool call.
 
     Args:
@@ -472,13 +674,98 @@ async def _handle_book_appointment(
             },
             trial_id=trial_id,
         )
+        await _update_pipeline_status(
+            session,
+            participant_id,
+            trial_id,
+            PipelineStatus.BOOKED,
+        )
+        appointment_id_str = result.get("appointment_id")
+        if appointment_id_str:
+            await _schedule_comms_cadence(
+                session,
+                participant_id,
+                uuid.UUID(appointment_id_str),
+                slot_dt,
+            )
     return result
+
+
+COMMS_CADENCE: list[tuple[str, timedelta]] = [
+    ("prep_instructions", timedelta(hours=48)),
+    ("confirmation_prompt", timedelta(hours=24)),
+    ("day_of_checkin", timedelta(hours=2)),
+]
+
+
+async def _schedule_single_reminder(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    template_id: str,
+    send_at: datetime,
+) -> None:
+    """Enqueue one comms cadence reminder, logging errors.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        template_id: Reminder template identifier.
+        send_at: Scheduled send datetime.
+    """
+    try:
+        await schedule_reminder(
+            session,
+            participant_id=participant_id,
+            appointment_id=appointment_id,
+            template_id=template_id,
+            channel=Channel.SMS,
+            send_at=send_at,
+        )
+    except Exception:
+        logger.warning(
+            "comms_cadence_enqueue_failed",
+            extra={"template_id": template_id},
+        )
+
+
+async def _schedule_comms_cadence(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    scheduled_at: datetime,
+) -> None:
+    """Enqueue prep, confirmation, and day-of reminders.
+
+    Calculates send times relative to the appointment datetime.
+    Skips reminders whose send_at is already in the past.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        scheduled_at: Appointment datetime.
+    """
+    now = datetime.now(UTC)
+    aware_at = scheduled_at.replace(tzinfo=UTC) if scheduled_at.tzinfo is None else scheduled_at
+    for template_id, offset in COMMS_CADENCE:
+        send_at = aware_at - offset
+        if send_at <= now:
+            continue
+        await _schedule_single_reminder(
+            session,
+            participant_id,
+            appointment_id,
+            template_id,
+            send_at,
+        )
 
 
 async def _handle_book_transport(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle transport booking server tool call.
 
     Args:
@@ -517,8 +804,8 @@ async def _handle_book_transport(
 
 async def _handle_safety_check(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle safety gate check server tool call.
 
     Args:
@@ -548,6 +835,18 @@ async def _handle_safety_check(
         "trigger_type": result.trigger_type,
         "severity": result.severity,
     }
+    await _log_agent_reasoning(
+        session,
+        params.get("_conversation_id"),
+        participant_id,
+        "safety_gate",
+        {
+            "decision": "safety_check",
+            "triggered": result.triggered,
+            "trigger_type": result.trigger_type,
+            "severity": result.severity,
+        },
+    )
     if result.triggered:
         await _log_and_broadcast(
             session,
@@ -559,35 +858,106 @@ async def _handle_safety_check(
     return result_dict
 
 
+def _parse_bool_param(params: dict[str, Any], key: str) -> bool | None:
+    """Parse a boolean parameter from string, returning None if absent.
+
+    Args:
+        params: Dictionary of tool parameters.
+        key: Parameter key to look up.
+
+    Returns:
+        Parsed boolean, or None if key is absent.
+    """
+    value = params.get(key)
+    if value is None:
+        return None
+    return str(value).lower() == "true"
+
+
+def _build_consent_data(
+    existing: dict[str, Any] | None,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge new consent fields into existing consent JSONB.
+
+    Args:
+        existing: Current consent dict from participant.
+        params: Tool parameters with consent fields.
+
+    Returns:
+        Updated consent dictionary.
+    """
+    consent_keys = [
+        "disclosed_automation",
+        "consent_to_continue",
+        "consent_sms",
+        "consent_future_trials",
+    ]
+    data = dict(existing or {})
+    for key in consent_keys:
+        if key in params:
+            data[key] = _parse_bool_param(params, key)
+    return data
+
+
+def _build_contactability_data(
+    existing: dict[str, Any] | None,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Merge new contactability fields into existing JSONB.
+
+    Args:
+        existing: Current contactability dict from participant.
+        params: Tool parameters with contactability fields.
+
+    Returns:
+        Updated contactability dict, or None if no fields present.
+    """
+    has_voicemail = "ok_to_leave_voicemail" in params
+    has_name = "permitted_voicemail_name" in params
+    if not has_voicemail and not has_name:
+        return None
+    data = dict(existing or {})
+    if has_voicemail:
+        data["ok_to_leave_voicemail"] = _parse_bool_param(
+            params, "ok_to_leave_voicemail"
+        )
+    if has_name:
+        data["permitted_voicemail_name"] = params["permitted_voicemail_name"]
+    return data
+
+
 async def _handle_capture_consent(
     session: AsyncSession,
-    params: dict,
-) -> dict:
+    params: dict[str, Any],
+) -> dict[str, Any]:
     """Handle consent capture server tool call.
 
     Args:
         session: Active database session.
-        params: Tool parameters with participant_id,
-            disclosed_automation, consent_to_continue.
+        params: Tool parameters with consent and contactability fields.
 
     Returns:
         Consent recording result.
     """
     participant_id = uuid.UUID(params["participant_id"])
-    disclosed = params.get("disclosed_automation", "false").lower() == "true"
-    consented = params.get("consent_to_continue", "false").lower() == "true"
-
     participant = await get_participant_by_id(session, participant_id)
-    if participant is not None:
-        consent_data = dict(participant.consent or {})
-        consent_data["disclosed_automation"] = disclosed
-        consent_data["consent_to_continue"] = consented
-        participant.consent = consent_data
 
-    payload = {
-        "disclosed_automation": disclosed,
-        "consent_to_continue": consented,
-    }
+    consent_data = _build_consent_data(
+        participant.consent if participant else None, params
+    )
+    contact_data = _build_contactability_data(
+        participant.contactability if participant else None, params
+    )
+
+    if participant is not None:
+        participant.consent = consent_data
+        if contact_data is not None:
+            participant.contactability = contact_data
+
+    payload = {k: v for k, v in consent_data.items()}
+    if contact_data is not None:
+        payload.update(contact_data)
     await _log_and_broadcast(
         session,
         participant_id,
@@ -596,6 +966,151 @@ async def _handle_capture_consent(
         trial_id=params.get("trial_id"),
     )
     return {"consent_recorded": True, **payload}
+
+
+async def _handle_get_verification_prompts(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle get_verification_prompts server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id.
+
+    Returns:
+        Verification prompts result as dict.
+    """
+    from src.agents.adversarial import (
+        generate_verification_prompts as _gen_prompts,
+    )
+
+    participant_id = uuid.UUID(params["participant_id"])
+    trial_id = params["trial_id"]
+    result = await _gen_prompts(
+        session, participant_id, trial_id,
+    )
+    return {**result}
+
+
+async def _handle_check_geo(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle geographic eligibility check server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id.
+
+    Returns:
+        Geographic eligibility result.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    trial_id = params["trial_id"]
+    result = await check_geo_eligibility(
+        session, participant_id, trial_id,
+    )
+    if not result.get("eligible", True):
+        await create_handoff(
+            session,
+            participant_id=participant_id,
+            reason=HandoffReason.GEO_INELIGIBLE,
+            severity=HandoffSeverity.CALLBACK_TICKET,
+            summary=f"Participant outside max distance for trial {trial_id}",
+            trial_id=trial_id,
+        )
+    return {**result}
+
+
+async def _handle_verify_teach_back(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle teach-back verification server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, appointment_id,
+            date_response, time_response, location_response.
+
+    Returns:
+        Teach-back verification result.
+    """
+    result = await verify_teach_back(
+        session,
+        uuid.UUID(params["participant_id"]),
+        uuid.UUID(params["appointment_id"]),
+        params["date_response"],
+        params["time_response"],
+        params["location_response"],
+    )
+    return {**result}
+
+
+async def _handle_hold_slot(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle slot hold server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id,
+            slot_datetime.
+
+    Returns:
+        Slot hold result.
+    """
+    slot_dt = datetime.fromisoformat(params["slot_datetime"])
+    result = await hold_slot(
+        session,
+        uuid.UUID(params["participant_id"]),
+        params["trial_id"],
+        slot_dt,
+    )
+    return {**result}
+
+
+async def _handle_mark_wrong_person(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle mark wrong person server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id.
+
+    Returns:
+        Identity verification result confirming wrong person marking.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await mark_wrong_person(session, participant_id)
+    return {**result}
+
+
+async def _handle_mark_call_outcome(
+    session: AsyncSession,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Handle mark_call_outcome server tool call.
+
+    Args:
+        session: Active database session.
+        params: Tool parameters with participant_id, trial_id, outcome.
+
+    Returns:
+        Call outcome result as dict.
+    """
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await mark_call_outcome(
+        session,
+        participant_id,
+        params["trial_id"],
+        params["outcome"],
+    )
+    return {**result}
 
 
 TOOL_HANDLERS = {
@@ -610,6 +1125,12 @@ TOOL_HANDLERS = {
     "book_transport": _handle_book_transport,
     "safety_check": _handle_safety_check,
     "capture_consent": _handle_capture_consent,
+    "get_verification_prompts": _handle_get_verification_prompts,
+    "check_geo_eligibility": _handle_check_geo,
+    "verify_teach_back": _handle_verify_teach_back,
+    "hold_slot": _handle_hold_slot,
+    "mark_wrong_person": _handle_mark_wrong_person,
+    "mark_call_outcome": _handle_mark_call_outcome,
     # Aliases: ElevenLabs prompt names → existing handlers
     "record_screening_answer": _handle_record_screening_response,
     "check_eligibility": _handle_determine_eligibility,
@@ -621,7 +1142,7 @@ async def _get_or_create_conversation(
     participant_id: uuid.UUID,
     conversation_id_str: str,
     trial_id: str,
-) -> "Conversation":
+) -> Conversation:
     """Find or create a conversation row by call_sid.
 
     Uses the ElevenLabs conversation_id as call_sid for unique lookup.
@@ -651,16 +1172,16 @@ async def _get_or_create_conversation(
     conversation = Conversation(
         participant_id=participant_id,
         trial_id=trial_id,
-        channel="voice",
-        direction="outbound",
+        channel=Channel.VOICE,
+        direction=Direction.OUTBOUND,
         call_sid=conversation_id_str,
-        status="completed",
+        status=ConversationStatus.COMPLETED,
     )
     session.add(conversation)
     return conversation
 
 
-def _normalize_transcript(raw: object) -> dict:
+def _normalize_transcript(raw: object) -> dict[str, Any]:
     """Normalize transcript into the shape the supervisor expects.
 
     Converts ElevenLabs list-of-turns format into the canonical
@@ -698,7 +1219,7 @@ def _normalize_transcript(raw: object) -> dict:
 
 async def _fetch_transcript(
     conversation_id: str,
-) -> list:
+) -> list[dict[str, Any]]:
     """Fetch conversation transcript from ElevenLabs API.
 
     Args:
@@ -761,6 +1282,13 @@ async def _trigger_post_call_checks(
         from src.agents.supervisor import audit_transcript
 
         audit = await audit_transcript(session, conversation_id)
+        await _log_and_broadcast(
+            session,
+            participant_id,
+            "supervisor_audit_completed",
+            audit,
+            trial_id=trial_id,
+        )
         if not audit.get("compliant", True):
             await _log_and_broadcast(
                 session,
@@ -773,11 +1301,104 @@ async def _trigger_post_call_checks(
         logger.debug("post_call_audit_failed")
 
     try:
+        from src.agents.supervisor import check_phi_leak
+
+        phi_result = await check_phi_leak(session, conversation_id)
+        await _log_and_broadcast(
+            session,
+            participant_id,
+            "phi_leak_check_completed",
+            phi_result,
+            trial_id=trial_id,
+        )
+        if phi_result.get("phi_leaked", False):
+            await _log_and_broadcast(
+                session,
+                participant_id,
+                "phi_leak_detected",
+                phi_result,
+                trial_id=trial_id,
+            )
+    except Exception:
+        logger.debug("phi_leak_check_failed")
+
+    try:
         from src.agents.adversarial import schedule_recheck
 
         await schedule_recheck(session, participant_id, trial_id)
     except Exception:
         logger.debug("adversarial_recheck_schedule_failed")
+
+
+RETRY_OUTCOMES: frozenset[str] = frozenset({
+    "no_answer",
+    "voicemail",
+    "early_hangup",
+})
+
+
+async def _get_latest_outcome_event(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+) -> Event | None:
+    """Query the most recent call_outcome_recorded event.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+
+    Returns:
+        Most recent call_outcome_recorded Event, or None.
+    """
+    result = await session.execute(
+        select(Event)
+        .where(Event.participant_id == participant_id)
+        .where(Event.event_type == "call_outcome_recorded")
+        .order_by(Event.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _check_and_schedule_retry(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+) -> None:
+    """Check call outcome and schedule retry if needed.
+
+    Queries the most recent call_outcome_recorded event and, if the
+    outcome is retryable, schedules the next outreach attempt.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+    """
+    event = await _get_latest_outcome_event(session, participant_id)
+    if event is None:
+        logger.warning(
+            "no_call_outcome_event_found",
+            extra={"participant_id": str(participant_id)},
+        )
+        return
+    payload = event.payload or {}
+    outcome = payload.get("outcome", "")
+    attempt = payload.get("attempt", 0)
+    if outcome not in RETRY_OUTCOMES:
+        return
+    await schedule_next_outreach(
+        session, participant_id, trial_id, attempt,
+    )
+    logger.info(
+        "outreach_retry_scheduled",
+        extra={
+            "participant_id": str(participant_id),
+            "trial_id": trial_id,
+            "outcome": outcome,
+            "attempt": attempt,
+        },
+    )
 
 
 # --- ElevenLabs Call Completion ---
@@ -801,7 +1422,7 @@ class CallCompletionPayload(BaseModel):
 async def handle_call_completion(
     payload: CallCompletionPayload,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Handle call completion — fetch audio, upload to GCS, run checks.
 
     Fetches the audio recording from ElevenLabs API, uploads to GCS,
@@ -860,6 +1481,19 @@ async def handle_call_completion(
         conversation.conversation_id,
     )
 
+    try:
+        await _check_and_schedule_retry(
+            session, participant_id, payload.trial_id,
+        )
+    except Exception:
+        logger.warning(
+            "retry_scheduling_failed",
+            extra={
+                "participant_id": str(participant_id),
+                "trial_id": payload.trial_id,
+            },
+        )
+
     logger.info(
         "call_completion_processed",
         extra={
@@ -886,7 +1520,7 @@ class SignedUrlRequest(BaseModel):
 
 
 @router.post("/audio/signed-url")
-async def get_audio_signed_url(request: SignedUrlRequest) -> dict:
+async def get_audio_signed_url(request: SignedUrlRequest) -> dict[str, Any]:
     """Generate a signed URL for audio playback.
 
     Args:
@@ -914,7 +1548,7 @@ async def get_audio_signed_url(request: SignedUrlRequest) -> dict:
 async def handle_dtmf(
     payload: DtmfWebhookPayload,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Handle Twilio DTMF digit capture for identity verification.
 
     Two-step flow:
@@ -972,7 +1606,7 @@ async def handle_dtmf_verify(
     dob_year: int,
     zip_code: str,
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Verify identity using captured DTMF digits.
 
     Called after both DOB year and ZIP code are captured.
@@ -1000,11 +1634,11 @@ async def handle_dtmf_verify(
 
 @router.post("/twilio/status")
 async def handle_twilio_status(
-    CallSid: str = Form(...),
-    CallStatus: str = Form(...),
+    call_sid: str = Form(..., alias="CallSid"),
+    call_status: str = Form(..., alias="CallStatus"),
     conversation_id: str | None = Query(None),
     session: AsyncSession = Depends(get_async_session),
-) -> dict:
+) -> dict[str, Any]:
     """Capture Twilio CallSid and associate with conversation.
 
     Twilio POSTs form-encoded data (CallSid, CallStatus). The
@@ -1013,8 +1647,8 @@ async def handle_twilio_status(
     the Twilio CallSid so warm transfer can resolve it mid-call.
 
     Args:
-        CallSid: Twilio call SID (form field).
-        CallStatus: Twilio call status (form field).
+        call_sid: Twilio call SID (form field).
+        call_status: Twilio call status (form field).
         conversation_id: Conversation UUID from query string.
         session: Injected database session.
 
@@ -1038,13 +1672,13 @@ async def handle_twilio_status(
     )
     conversation = result.scalar_one_or_none()
     if conversation:
-        conversation.twilio_call_sid = CallSid
+        conversation.twilio_call_sid = call_sid
         logger.info(
             "twilio_call_sid_captured",
             extra={
                 "conversation_id": conversation_id,
-                "twilio_call_sid": CallSid,
-                "call_status": CallStatus,
+                "twilio_call_sid": call_sid,
+                "call_status": call_status,
             },
         )
         return {"ok": True, "updated": True}

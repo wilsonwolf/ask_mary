@@ -14,12 +14,19 @@ from agents import Agent, function_tool
 from src.db.events import log_event
 from src.db.postgres import get_participant_by_id, get_participant_trial
 from src.db.trials import get_trial_criteria
+from src.shared.response_models import (
+    EligibilityResult,
+    HardExcludeResult,
+    ScreeningCriteriaResult,
+    ScreeningResponseResult,
+)
+from src.shared.types import EligibilityStatus
 
 
 async def get_screening_criteria(
     session: AsyncSession,
     trial_id: str,
-) -> dict:
+) -> ScreeningCriteriaResult:
     """Get trial criteria for screening questions.
 
     Args:
@@ -27,16 +34,21 @@ async def get_screening_criteria(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with inclusion, exclusion criteria, and trial name.
+        ScreeningCriteriaResult with inclusion, exclusion, and trial name.
     """
     from src.db.trials import get_trial
 
     trial = await get_trial(session, trial_id)
     if trial is None:
-        return {"error": f"trial {trial_id} not found"}
+        return ScreeningCriteriaResult(
+            error=f"trial {trial_id} not found",
+        )
     criteria = await get_trial_criteria(session, trial_id)
-    criteria["trial_name"] = trial.trial_name
-    return criteria
+    return ScreeningCriteriaResult(
+        inclusion=criteria.get("inclusion", {}),
+        exclusion=criteria.get("exclusion", {}),
+        trial_name=trial.trial_name,
+    )
 
 
 async def check_hard_excludes(
@@ -44,7 +56,7 @@ async def check_hard_excludes(
     participant_id: uuid.UUID,
     trial_id: str,
     responses: dict,
-) -> dict:
+) -> HardExcludeResult:
     """Check participant responses against hard exclusion criteria.
 
     Args:
@@ -54,7 +66,7 @@ async def check_hard_excludes(
         responses: Participant screening responses.
 
     Returns:
-        Dict with 'excluded' boolean and matched criteria.
+        HardExcludeResult with exclusion status and reason.
     """
     criteria = await get_trial_criteria(session, trial_id)
     exclusions = criteria.get("exclusion", {})
@@ -63,8 +75,12 @@ async def check_hard_excludes(
         if key in responses and responses[key] == required_value:
             matched.append(key)
     if matched:
-        return {"excluded": True, "matched_criteria": matched}
-    return {"excluded": False}
+        return HardExcludeResult(
+            excluded=True,
+            matched_criteria=matched,
+            reason=", ".join(matched),
+        )
+    return HardExcludeResult(excluded=False)
 
 
 async def record_screening_response(
@@ -74,7 +90,7 @@ async def record_screening_response(
     question_key: str,
     answer: str,
     provenance: str,
-) -> dict:
+) -> ScreeningResponseResult:
     """Record a single screening response with provenance.
 
     Args:
@@ -86,11 +102,11 @@ async def record_screening_response(
         provenance: Data source (patient_stated, ehr, coordinator).
 
     Returns:
-        Dict confirming the response was recorded.
+        ScreeningResponseResult confirming the response was recorded.
     """
     pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
-        return {"error": "enrollment_not_found"}
+        return ScreeningResponseResult(recorded=False, error="enrollment_not_found")
 
     responses = pt.screening_responses or {}
     history_key = f"{question_key}_history"
@@ -103,7 +119,7 @@ async def record_screening_response(
         "provenance": provenance,
     }
     pt.screening_responses = responses
-    return {"recorded": True}
+    return ScreeningResponseResult(recorded=True)
 
 
 def _extract_answer(entry: object) -> str:
@@ -214,7 +230,7 @@ async def determine_eligibility(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> EligibilityResult:
     """Determine participant eligibility based on screening responses.
 
     Handles nested response format ``{"answer": ..., "provenance": ...}``
@@ -228,15 +244,15 @@ async def determine_eligibility(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with ``eligible`` bool and ``reason`` string.
+        EligibilityResult with eligible status and reason.
     """
     pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
-        return {
-            "eligible": False,
-            "status": "ineligible",
-            "reason": "enrollment_not_found",
-        }
+        return EligibilityResult(
+            eligible=False,
+            status=EligibilityStatus.INELIGIBLE,
+            reason="enrollment_not_found",
+        )
 
     criteria = await get_trial_criteria(session, trial_id)
     responses = pt.screening_responses or {}
@@ -249,12 +265,12 @@ async def determine_eligibility(
             continue
         answer = _extract_answer(entry)
         if required_value is True and _is_affirmative(answer):
-            pt.eligibility_status = "ineligible"
-            return {
-                "eligible": False,
-                "status": "ineligible",
-                "reason": f"excluded_by_{key}",
-            }
+            pt.eligibility_status = EligibilityStatus.INELIGIBLE
+            return EligibilityResult(
+                eligible=False,
+                status=EligibilityStatus.INELIGIBLE,
+                reason=f"excluded_by_{key}",
+            )
 
     # Check inclusions
     inclusions = criteria.get("inclusion", {})
@@ -279,26 +295,26 @@ async def determine_eligibility(
                 failed.append(f"{key}: expected {required_value}")
 
     if failed:
-        pt.eligibility_status = "ineligible"
-        return {
-            "eligible": False,
-            "status": "ineligible",
-            "reason": f"failed: {', '.join(failed)}",
-        }
+        pt.eligibility_status = EligibilityStatus.INELIGIBLE
+        return EligibilityResult(
+            eligible=False,
+            status=EligibilityStatus.INELIGIBLE,
+            reason=f"failed: {', '.join(failed)}",
+        )
 
     if missing:
-        return {
-            "eligible": False,
-            "status": "ineligible",
-            "reason": f"missing responses: {', '.join(missing)}",
-        }
+        return EligibilityResult(
+            eligible=False,
+            status=EligibilityStatus.INELIGIBLE,
+            reason=f"missing responses: {', '.join(missing)}",
+        )
 
-    pt.eligibility_status = "eligible"
-    return {
-        "eligible": True,
-        "status": "eligible",
-        "reason": "all_criteria_met",
-    }
+    pt.eligibility_status = EligibilityStatus.ELIGIBLE
+    return EligibilityResult(
+        eligible=True,
+        status=EligibilityStatus.ELIGIBLE,
+        reason="all_criteria_met",
+    )
 
 
 async def record_caregiver_info(
@@ -307,7 +323,7 @@ async def record_caregiver_info(
     caregiver_name: str,
     relationship: str,
     scope: str,
-) -> dict:
+) -> ScreeningResponseResult:
     """Record authorized caregiver information.
 
     Args:
@@ -318,7 +334,7 @@ async def record_caregiver_info(
         scope: Authorization scope (scheduling, all).
 
     Returns:
-        Dict confirming caregiver info was recorded.
+        ScreeningResponseResult confirming caregiver info was recorded.
     """
     participant = await get_participant_by_id(session, participant_id)
     participant.caregiver = {
@@ -333,7 +349,7 @@ async def record_caregiver_info(
         payload=participant.caregiver,
         provenance="patient_stated",
     )
-    return {"recorded": True}
+    return ScreeningResponseResult(recorded=True)
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Event
+from src.shared.types import Channel, Provenance
 
 
 async def log_event(
@@ -19,8 +20,8 @@ async def log_event(
     conversation_id: uuid.UUID | None = None,
     trial_id: str | None = None,
     payload: dict | None = None,
-    provenance: str | None = None,
-    channel: str | None = None,
+    provenance: Provenance | None = None,
+    channel: Channel | None = None,
 ) -> Event | None:
     """Log an event to the append-only events table.
 

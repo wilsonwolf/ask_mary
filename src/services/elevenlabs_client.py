@@ -1,9 +1,15 @@
 """ElevenLabs Conversational AI service client."""
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from src.services.elevenlabs_workflows import WorkflowDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +95,9 @@ def build_system_prompt(
     return (
         f"You are Mary, an AI assistant calling about the "
         f"{trial_name} study at {site_name}.\n\n"
+        f"CRITICAL SAFETY RULE: You MUST call the safety_check tool "
+        f"before delivering ANY response to the participant. "
+        f"No exceptions.\n\n"
         f"INCLUSION CRITERIA:\n{inclusion_text}\n\n"
         f"EXCLUSION CRITERIA:\n{exclusion_text}\n\n"
         f"VISIT SCHEDULE:\n{visits_text}\n\n"
@@ -168,7 +177,20 @@ def build_system_prompt(
         f"- check_availability: call to find open appointment slots\n"
         f"- book_appointment: call when participant picks a slot\n"
         f"- book_transport: call when participant wants a ride\n"
-        f"- safety_check: call ONLY for Tier 1 medical emergencies\n\n"
+        f"- check_geo_eligibility: call after confirming participant "
+        f"address to verify distance to trial site\n"
+        f"- verify_teach_back: call after booking to verify participant "
+        f"can repeat date, time, and location\n"
+        f"- hold_slot: call to temporarily hold a slot before final booking\n"
+        f"- mark_wrong_person: call if you determine you are speaking "
+        f"to the wrong person\n"
+        f"- mark_call_outcome: call before ending the call to record "
+        f"the result (completed, no_answer, voicemail, early_hangup, "
+        f"wrong_person, refused, consent_denied)\n"
+        f"- safety_check: MANDATORY — call before EVERY response to the "
+        f"participant. This is a non-negotiable safety requirement. "
+        f"The tool returns instantly (<200ms) and will flag if your "
+        f"response needs modification.\n\n"
         f"RULES:\n"
         f"- NEVER share trial details before identity is verified.\n"
         f"- NEVER give medical advice.\n"
@@ -448,3 +470,69 @@ class ElevenLabsClient:
                 extra={"conversation_id": conversation_id},
             )
             return None
+
+    async def create_workflow_agent(
+        self,
+        workflow: WorkflowDefinition,
+    ) -> str:
+        """Create an ElevenLabs agent from a workflow definition.
+
+        Delegates to the standalone create_workflow_agent function
+        and returns the workflow_id.
+
+        Args:
+            workflow: Workflow definition with nodes and edges.
+
+        Returns:
+            Agent ID string from ElevenLabs.
+        """
+        # TODO: Replace with real HTTP client call when API is GA
+        from src.services.elevenlabs_workflows import (
+            create_workflow_agent as _create,
+        )
+
+        result = await _create(workflow)
+        return result["workflow_id"]
+
+    async def update_workflow_agent(
+        self,
+        agent_id: str,
+        workflow: WorkflowDefinition,
+    ) -> bool:
+        """Update an existing ElevenLabs agent with new workflow.
+
+        Delegates to the standalone update_workflow_agent function.
+
+        Args:
+            agent_id: Existing ElevenLabs agent ID.
+            workflow: Updated workflow definition.
+
+        Returns:
+            True if update succeeded.
+        """
+        # TODO: Replace with real HTTP client call when API is GA
+        from src.services.elevenlabs_workflows import (
+            update_workflow_agent as _update,
+        )
+
+        result = await _update(agent_id, workflow)
+        return result["status"] == "updated"
+
+    async def get_workflow_status(
+        self,
+        agent_id: str,
+    ) -> dict:
+        """Get the current workflow status for an agent.
+
+        Args:
+            agent_id: ElevenLabs agent ID.
+
+        Returns:
+            Dict with workflow status and node states.
+
+        Raises:
+            NotImplementedError: Pending ElevenLabs workflow API GA.
+        """
+        raise NotImplementedError(
+            "Workflow status pending ElevenLabs API GA",
+        )

@@ -11,6 +11,7 @@ Dependency direction: api -> agents -> services -> db -> shared
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +28,17 @@ from src.services.elevenlabs_client import (
     build_system_prompt,
 )
 from src.services.twilio_client import TwilioClient
+from src.shared.response_models import (
+    CallContextResult,
+    CallOutcomeResult,
+    CommunicationResult,
+    DncCheckResult,
+    OutreachCallResult,
+    ReminderResult,
+    ScreeningResponseResult,
+    StopKeywordResult,
+)
+from src.shared.types import CallOutcome, Channel, ConversationStatus, Direction, Provenance
 from src.shared.validators import is_dnc_blocked
 
 
@@ -34,7 +46,7 @@ async def check_dnc_before_contact(
     session: AsyncSession,
     participant_id: uuid.UUID,
     channel: str,
-) -> dict:
+) -> DncCheckResult:
     """Check DNC flags before any outbound contact.
 
     Dual-source: checks internal DB flags AND Twilio opt-out.
@@ -46,13 +58,13 @@ async def check_dnc_before_contact(
         channel: Communication channel to check.
 
     Returns:
-        Dict with 'blocked' boolean and optional 'reason'.
+        DncCheckResult with blocked status and source.
     """
     participant = await get_participant_by_id(session, participant_id)
     if participant is None:
-        return {"blocked": True, "reason": "participant_not_found"}
+        return DncCheckResult(blocked=True, reason="participant_not_found")
     if is_dnc_blocked(participant.dnc_flags, channel):
-        return {"blocked": True, "reason": "dnc_active"}
+        return DncCheckResult(blocked=True, reason="dnc_active")
     settings = get_settings()
     if settings.twilio_account_sid:
         twilio = TwilioClient(
@@ -62,15 +74,15 @@ async def check_dnc_before_contact(
             messaging_service_sid=(settings.twilio_messaging_service_sid),
         )
         if twilio.check_dnc_status(participant.phone):
-            return {"blocked": True, "reason": "twilio_opted_out"}
-    return {"blocked": False}
+            return DncCheckResult(blocked=True, reason="twilio_opted_out")
+    return DncCheckResult(blocked=False)
 
 
 async def assemble_call_context(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> CallContextResult:
     """Assemble context for an outbound call.
 
     Args:
@@ -79,20 +91,22 @@ async def assemble_call_context(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with participant name, trial info, and coordinator phone.
+        CallContextResult with participant name, trial info, and coordinator phone.
     """
     participant = await get_participant_by_id(session, participant_id)
     trial = await get_trial(session, trial_id)
-    return {
-        "participant_name": (f"{participant.first_name} {participant.last_name}"),
-        "participant_phone": participant.phone,
-        "trial_name": trial.trial_name,
-        "site_name": trial.site_name,
-        "coordinator_phone": trial.coordinator_phone,
-        "inclusion_criteria": trial.inclusion_criteria or {},
-        "exclusion_criteria": trial.exclusion_criteria or {},
-        "visit_templates": trial.visit_templates or {},
-    }
+    return CallContextResult(
+        context={
+            "participant_name": f"{participant.first_name} {participant.last_name}",
+            "participant_phone": participant.phone,
+            "trial_name": trial.trial_name,
+            "site_name": trial.site_name,
+            "coordinator_phone": trial.coordinator_phone,
+            "inclusion_criteria": trial.inclusion_criteria or {},
+            "exclusion_criteria": trial.exclusion_criteria or {},
+            "visit_templates": trial.visit_templates or {},
+        },
+    )
 
 
 def _build_status_callback(
@@ -118,7 +132,7 @@ async def initiate_outbound_call(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> OutreachCallResult:
     """Initiate an outbound call via ElevenLabs Conversational AI.
 
     Args:
@@ -127,23 +141,24 @@ async def initiate_outbound_call(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with call initiation status and conversation_id.
+        OutreachCallResult with call initiation status and conversation_id.
     """
     from src.db.models import Conversation
 
-    context = await assemble_call_context(
+    call_context_result = await assemble_call_context(
         session,
         participant_id,
         trial_id,
     )
+    context = call_context_result.context
     settings = get_settings()
 
     conversation = Conversation(
         participant_id=participant_id,
         trial_id=trial_id,
-        channel="voice",
-        direction="outbound",
-        status="initiating",
+        channel=Channel.VOICE,
+        direction=Direction.OUTBOUND,
+        status=ConversationStatus.ACTIVE,
     )
     session.add(conversation)
     await session.flush()
@@ -185,7 +200,7 @@ async def initiate_outbound_call(
     )
 
     conversation.call_sid = call_result.conversation_id
-    conversation.status = "active"
+    conversation.status = ConversationStatus.ACTIVE
 
     await log_event(
         session,
@@ -196,13 +211,13 @@ async def initiate_outbound_call(
             "conversation_id": call_result.conversation_id,
             "status": call_result.status,
         },
-        provenance="system",
-        channel="voice",
+        provenance=Provenance.SYSTEM,
+        channel=Channel.VOICE,
     )
-    return {
-        "initiated": True,
-        "conversation_id": call_result.conversation_id,
-    }
+    return OutreachCallResult(
+        initiated=True,
+        conversation_id=call_result.conversation_id,
+    )
 
 
 async def capture_consent(
@@ -210,7 +225,7 @@ async def capture_consent(
     participant_id: uuid.UUID,
     disclosed_automation: bool,
     consent_to_continue: bool,
-) -> dict:
+) -> ScreeningResponseResult:
     """Capture participant consent after disclosure.
 
     Args:
@@ -220,7 +235,7 @@ async def capture_consent(
         consent_to_continue: Whether participant consented.
 
     Returns:
-        Dict with consent capture status.
+        ScreeningResponseResult with consent capture status.
     """
     participant = await get_participant_by_id(session, participant_id)
     participant.consent = {
@@ -232,9 +247,78 @@ async def capture_consent(
         participant_id=participant_id,
         event_type="consent_captured",
         payload=participant.consent,
-        provenance="patient_stated",
+        provenance=Provenance.PATIENT_STATED,
     )
-    return {"consent_captured": True}
+    return ScreeningResponseResult(recorded=True)
+
+
+RETRY_OUTCOMES: frozenset[CallOutcome] = frozenset({
+    CallOutcome.NO_ANSWER,
+    CallOutcome.VOICEMAIL,
+    CallOutcome.EARLY_HANGUP,
+})
+
+
+def _validate_call_outcome(outcome: str) -> CallOutcome:
+    """Validate an outcome string against CallOutcome enum values.
+
+    Args:
+        outcome: Raw outcome string to validate.
+
+    Returns:
+        Validated CallOutcome enum member.
+
+    Raises:
+        ValueError: If outcome is not a valid CallOutcome value.
+    """
+    try:
+        return CallOutcome(outcome)
+    except ValueError:
+        valid = [o.value for o in CallOutcome]
+        raise ValueError(f"Invalid outcome '{outcome}'. Must be one of: {valid}") from None
+
+
+async def mark_call_outcome(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+    outcome: str,
+) -> CallOutcomeResult:
+    """Record the outcome of a call and determine retry eligibility.
+
+    Validates the outcome, increments the participant's attempt count,
+    logs the event, and determines whether a retry should be scheduled.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+        outcome: Call outcome string (must be a valid CallOutcome value).
+
+    Returns:
+        CallOutcomeResult with recorded status and retry information.
+    """
+    validated = _validate_call_outcome(outcome)
+    participant = await get_participant_by_id(session, participant_id)
+    attempt_count = (participant.outreach_attempt_count or 0) + 1
+    participant.outreach_attempt_count = attempt_count
+
+    await log_event(
+        session,
+        participant_id=participant_id,
+        event_type="call_outcome_recorded",
+        trial_id=trial_id,
+        payload={"outcome": outcome, "attempt": attempt_count},
+        provenance=Provenance.SYSTEM,
+    )
+
+    should_retry = validated in RETRY_OUTCOMES
+    return CallOutcomeResult(
+        recorded=True,
+        outcome=outcome,
+        should_retry=should_retry,
+        next_attempt=attempt_count if should_retry else None,
+    )
 
 
 async def log_outreach_attempt(
@@ -243,7 +327,7 @@ async def log_outreach_attempt(
     trial_id: str,
     channel: str,
     outcome: str,
-) -> dict:
+) -> CommunicationResult:
     """Log an outreach attempt to the events table.
 
     Args:
@@ -254,7 +338,7 @@ async def log_outreach_attempt(
         outcome: Attempt outcome (completed, no_answer, voicemail).
 
     Returns:
-        Dict confirming the event was logged.
+        CommunicationResult confirming the event was logged.
     """
     await log_event(
         session,
@@ -263,17 +347,89 @@ async def log_outreach_attempt(
         trial_id=trial_id,
         channel=channel,
         payload={"outcome": outcome},
-        provenance="system",
+        provenance=Provenance.SYSTEM,
     )
-    return {"logged": True}
+    return CommunicationResult(sent=True, channel=Channel(channel))
+
+
+# Retry cadence: (channel, delay_hours) after each failed attempt.
+# Voice #1 → SMS nudge (1h) → Voice #2 (24h) → Voice #3 (48h) → final SMS (49h)
+OUTREACH_CADENCE: list[tuple[str, int]] = [
+    ("sms", 1),
+    ("voice", 24),
+    ("voice", 48),
+    ("sms", 49),
+]
+
+
+async def schedule_next_outreach(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+    current_attempt: int,
+) -> ReminderResult | None:
+    """Schedule the next outreach retry based on cadence.
+
+    Uses OUTREACH_CADENCE to determine channel and delay for the
+    next contact attempt. Returns None when max retries are reached.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+        current_attempt: Zero-based index of the current attempt.
+
+    Returns:
+        ReminderResult if scheduled, or None if max retries reached.
+    """
+    if current_attempt >= len(OUTREACH_CADENCE):
+        return None
+    channel, delay_hours = OUTREACH_CADENCE[current_attempt]
+    send_at = datetime.now(UTC) + timedelta(hours=delay_hours)
+    return await _enqueue_outreach_retry(
+        participant_id, trial_id, channel, send_at, current_attempt,
+    )
+
+
+async def _enqueue_outreach_retry(
+    participant_id: uuid.UUID,
+    trial_id: str,
+    channel: str,
+    send_at: datetime,
+    current_attempt: int,
+) -> ReminderResult:
+    """Enqueue an outreach retry task via Cloud Tasks.
+
+    Args:
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+        channel: Communication channel for the retry.
+        send_at: Scheduled send datetime.
+        current_attempt: Zero-based attempt index for idempotency key.
+
+    Returns:
+        ReminderResult with scheduled status and task_id.
+    """
+    from src.services.cloud_tasks_client import enqueue_reminder
+
+    idempotency_key = f"outreach-retry-{participant_id}-{current_attempt}"
+    task_result = await enqueue_reminder(
+        participant_id=participant_id,
+        appointment_id=uuid.UUID(int=0),
+        template_id="outreach_retry",
+        channel=channel,
+        send_at=send_at,
+        idempotency_key=idempotency_key,
+    )
+    return ReminderResult(scheduled=True, task_id=task_result.task_id)
 
 
 async def handle_stop_keyword(
     session: AsyncSession,
     participant_id: uuid.UUID,
     channel: str,
-) -> dict:
-    """Handle STOP keyword — set DNC flag immediately.
+) -> StopKeywordResult:
+    """Handle STOP keyword -- set DNC flag immediately.
 
     Args:
         session: Active database session.
@@ -281,7 +437,7 @@ async def handle_stop_keyword(
         channel: Channel on which STOP was received.
 
     Returns:
-        Dict confirming DNC was applied.
+        StopKeywordResult confirming DNC was applied.
     """
     participant = await get_participant_by_id(session, participant_id)
     flags = participant.dnc_flags or {}
@@ -293,9 +449,9 @@ async def handle_stop_keyword(
         event_type="dnc_applied",
         channel=channel,
         payload={"keyword": "STOP", "channel": channel},
-        provenance="patient_stated",
+        provenance=Provenance.PATIENT_STATED,
     )
-    return {"dnc_applied": True}
+    return StopKeywordResult(dnc_applied=True, source="stop_keyword")
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

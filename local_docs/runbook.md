@@ -95,3 +95,23 @@ gcloud storage rm --recursive gs://ask-mary-audio
 | View Cloud Run logs | `gcloud run services logs read ask-mary --region=us-west2 --project=ask-mary-486802 --limit=50` |
 | Redeploy latest code | `gcloud builds submit --config=cloudbuild.yaml --substitutions=SHORT_SHA=$(git rev-parse --short HEAD)` |
 | Health check | `curl https://ask-mary-1030626458480.us-west2.run.app/health` |
+
+---
+
+## ElevenLabs Tool Management
+
+Register/update server tools on the ElevenLabs agent:
+
+```bash
+# Register all 14 server tools (removes old ones first)
+python scripts/register_elevenlabs_tools.py --clean
+
+# List currently registered tools
+python scripts/register_elevenlabs_tools.py --list
+```
+
+The registration script manages these server tools:
+- safety_check, verify_identity, get_verification_prompts, detect_duplicate
+- get_screening_criteria, check_hard_excludes, record_screening_response, determine_eligibility
+- check_availability, book_appointment, book_transport
+- check_geo_eligibility, verify_teach_back, hold_slot, mark_wrong_person, mark_call_outcome

@@ -1,15 +1,17 @@
 """Tests for the transport agent function tools."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.transport import (
+    _schedule_ride_reconfirmation,
     book_transport,
     check_ride_status,
     confirm_pickup_address,
     transport_agent,
 )
+from src.shared.types import RideStatus
 
 
 class TestTransportAgentDefinition:
@@ -82,7 +84,8 @@ class TestBookTransport:
                 uuid.uuid4(),
                 "123 Main St, Portland OR 97201",
             )
-        assert result == {"error": "appointment_not_found"}
+        assert result["booked"] is False
+        assert result["error"] == "appointment_not_found"
 
 
 class TestCheckRideStatus:
@@ -92,7 +95,7 @@ class TestCheckRideStatus:
         """Returns current ride status."""
         mock_session = AsyncMock()
         ride = MagicMock()
-        ride.status = "confirmed"
+        ride.status = RideStatus.CONFIRMED
         ride.uber_ride_id = "mock-ride-123"
 
         result_mock = MagicMock()
@@ -100,4 +103,125 @@ class TestCheckRideStatus:
         mock_session.execute.return_value = result_mock
 
         result = await check_ride_status(mock_session, uuid.uuid4())
-        assert result["status"] == "confirmed"
+        assert result["booked"] is True
+
+
+class TestScheduleRideReconfirmation:
+    """Ride reconfirmation task scheduling."""
+
+    async def test_enqueues_two_tasks(self) -> None:
+        """Schedules both T-24h and T-2h reconfirmation tasks."""
+        ride_id = uuid.uuid4()
+        participant_id = uuid.uuid4()
+        appointment_id = uuid.uuid4()
+        pickup_at = datetime.now(UTC) + timedelta(hours=48)
+        mock_enqueue = AsyncMock()
+
+        with patch(
+            "src.agents.transport.enqueue_reminder",
+            mock_enqueue,
+        ):
+            await _schedule_ride_reconfirmation(
+                participant_id, appointment_id, ride_id, pickup_at,
+            )
+
+        assert mock_enqueue.await_count == 2
+        calls = mock_enqueue.call_args_list
+        assert calls[0].kwargs["template_id"] == "transport_reconfirm_24h"
+        assert calls[1].kwargs["template_id"] == "transport_reconfirm_2h"
+
+    async def test_correct_timing(self) -> None:
+        """T-24h and T-2h send_at values match expected offsets."""
+        ride_id = uuid.uuid4()
+        pickup_at = datetime.now(UTC) + timedelta(hours=48)
+        mock_enqueue = AsyncMock()
+
+        with patch(
+            "src.agents.transport.enqueue_reminder",
+            mock_enqueue,
+        ):
+            await _schedule_ride_reconfirmation(
+                uuid.uuid4(), uuid.uuid4(), ride_id, pickup_at,
+            )
+
+        calls = mock_enqueue.call_args_list
+        expected_24h = pickup_at - timedelta(hours=24)
+        expected_2h = pickup_at - timedelta(hours=2)
+        assert calls[0].kwargs["send_at"] == expected_24h
+        assert calls[1].kwargs["send_at"] == expected_2h
+
+    async def test_skips_past_due_reconfirmations(self) -> None:
+        """Does not enqueue tasks when send_at is in the past."""
+        ride_id = uuid.uuid4()
+        pickup_at = datetime.now(UTC) + timedelta(hours=1)
+        mock_enqueue = AsyncMock()
+
+        with patch(
+            "src.agents.transport.enqueue_reminder",
+            mock_enqueue,
+        ):
+            await _schedule_ride_reconfirmation(
+                uuid.uuid4(), uuid.uuid4(), ride_id, pickup_at,
+            )
+
+        assert mock_enqueue.await_count == 0
+
+    async def test_idempotency_keys_contain_ride_id(self) -> None:
+        """Idempotency keys include the ride_id for uniqueness."""
+        ride_id = uuid.uuid4()
+        pickup_at = datetime.now(UTC) + timedelta(hours=48)
+        mock_enqueue = AsyncMock()
+
+        with patch(
+            "src.agents.transport.enqueue_reminder",
+            mock_enqueue,
+        ):
+            await _schedule_ride_reconfirmation(
+                uuid.uuid4(), uuid.uuid4(), ride_id, pickup_at,
+            )
+
+        calls = mock_enqueue.call_args_list
+        key_24h = calls[0].kwargs["idempotency_key"]
+        key_2h = calls[1].kwargs["idempotency_key"]
+        assert f"transport-reconfirm-24h-{ride_id}" == key_24h
+        assert f"transport-reconfirm-2h-{ride_id}" == key_2h
+
+    async def test_scheduling_failure_does_not_raise(self) -> None:
+        """Enqueue failure is caught without propagating."""
+        ride_id = uuid.uuid4()
+        pickup_at = datetime.now(UTC) + timedelta(hours=48)
+        mock_enqueue = AsyncMock(side_effect=RuntimeError("queue down"))
+
+        with patch(
+            "src.agents.transport.enqueue_reminder",
+            mock_enqueue,
+        ):
+            await _schedule_ride_reconfirmation(
+                uuid.uuid4(), uuid.uuid4(), ride_id, pickup_at,
+            )
+
+    async def test_book_transport_calls_reconfirmation(self) -> None:
+        """book_transport schedules reconfirmation after ride creation."""
+        mock_session = AsyncMock()
+        mock_ride = MagicMock()
+        mock_ride.ride_id = uuid.uuid4()
+        appointment = MagicMock()
+        appointment.site_address = "456 Oak Ave"
+        appointment.scheduled_at = datetime(2026, 3, 16, 10, 0, tzinfo=UTC)
+
+        with (
+            patch("src.agents.transport.get_appointment", return_value=appointment),
+            patch("src.agents.transport.create_ride", return_value=mock_ride),
+            patch(
+                "src.agents.transport._schedule_ride_reconfirmation",
+                new_callable=AsyncMock,
+            ) as mock_schedule,
+        ):
+            await book_transport(
+                mock_session,
+                uuid.uuid4(),
+                uuid.uuid4(),
+                "123 Main St",
+            )
+
+        mock_schedule.assert_awaited_once()

@@ -77,7 +77,7 @@ def _build_tool_config(
 
 
 def build_all_tool_configs(base_url: str) -> list[dict]:
-    """Build all 8 tool configs.
+    """Build all 14 tool configs.
 
     Args:
         base_url: Public base URL for webhooks.
@@ -258,7 +258,7 @@ def build_all_tool_configs(base_url: str) -> list[dict]:
         ),
         _build_tool_config(
             name="safety_check",
-            description=("Run safety gate check on agent response before sending"),
+            description=("MANDATORY — run safety gate on every response before sending"),
             properties={
                 "participant_id": {
                     "type": "string",
@@ -278,6 +278,137 @@ def build_all_tool_configs(base_url: str) -> list[dict]:
                 },
             },
             required=["participant_id", "response"],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="check_geo_eligibility",
+            description="Check if participant is within travel distance to trial site",
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+                "trial_id": {
+                    "type": "string",
+                    "dynamic_variable": "trial_id",
+                },
+            },
+            required=["participant_id", "trial_id"],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="verify_teach_back",
+            description=(
+                "Verify participant can repeat appointment date, time, and location"
+            ),
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+                "appointment_id": {
+                    "type": "string",
+                    "description": "Appointment UUID",
+                },
+                "date_response": {
+                    "type": "string",
+                    "description": "Participant's stated appointment date",
+                },
+                "time_response": {
+                    "type": "string",
+                    "description": "Participant's stated appointment time",
+                },
+                "location_response": {
+                    "type": "string",
+                    "description": "Participant's stated appointment location",
+                },
+            },
+            required=[
+                "participant_id",
+                "appointment_id",
+                "date_response",
+                "time_response",
+                "location_response",
+            ],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="hold_slot",
+            description="Temporarily hold an appointment slot before final booking",
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+                "trial_id": {
+                    "type": "string",
+                    "dynamic_variable": "trial_id",
+                },
+                "slot_datetime": {
+                    "type": "string",
+                    "description": "ISO datetime for the slot to hold",
+                },
+            },
+            required=["participant_id", "trial_id", "slot_datetime"],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="mark_wrong_person",
+            description=(
+                "Mark that you are speaking to the wrong person — "
+                "suppresses further outreach"
+            ),
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+            },
+            required=["participant_id"],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="mark_call_outcome",
+            description=(
+                "Record call result before ending: completed, no_answer, "
+                "voicemail, early_hangup, wrong_person, refused, consent_denied"
+            ),
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+                "trial_id": {
+                    "type": "string",
+                    "dynamic_variable": "trial_id",
+                },
+                "outcome": {
+                    "type": "string",
+                    "description": (
+                        "Call outcome: completed, no_answer, voicemail, "
+                        "early_hangup, wrong_person, refused, consent_denied"
+                    ),
+                },
+            },
+            required=["participant_id", "trial_id", "outcome"],
+            base_url=base_url,
+        ),
+        _build_tool_config(
+            name="get_verification_prompts",
+            description=(
+                "Get adversarial re-verification prompts for the current call"
+            ),
+            properties={
+                "participant_id": {
+                    "type": "string",
+                    "dynamic_variable": "participant_id",
+                },
+                "trial_id": {
+                    "type": "string",
+                    "dynamic_variable": "trial_id",
+                },
+            },
+            required=["participant_id", "trial_id"],
             base_url=base_url,
         ),
     ]

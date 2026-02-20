@@ -3,6 +3,7 @@
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
@@ -14,7 +15,7 @@ _engine = None
 _session_factory = None
 
 
-def _get_engine():
+def _get_engine() -> AsyncEngine:
     """Create or return the cached async engine.
 
     Returns:
@@ -32,7 +33,7 @@ def _get_engine():
     return _engine
 
 
-def _get_session_factory():
+def _get_session_factory() -> async_sessionmaker[AsyncSession]:
     """Create or return the cached session factory.
 
     Returns:

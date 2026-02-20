@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents import Agent, function_tool
 from src.db.models import Conversation
 from src.db.postgres import get_participant_trial
+from src.shared.response_models import DeceptionResult, SupervisorAuditResult
 
 REQUIRED_STEPS = ["disclosure", "consent", "identity_verified"]
 
@@ -31,7 +32,7 @@ VALID_PROVENANCES = {
 async def audit_transcript(
     session: AsyncSession,
     conversation_id: uuid.UUID,
-) -> dict:
+) -> SupervisorAuditResult:
     """Audit a conversation transcript for required compliance steps.
 
     Checks that disclosure, consent, and identity_verified steps are
@@ -42,7 +43,7 @@ async def audit_transcript(
         conversation_id: Conversation UUID to audit.
 
     Returns:
-        Dict with compliant bool, risk_level, and missing_steps list.
+        SupervisorAuditResult with compliant status and violations.
     """
     result = await session.execute(
         select(Conversation).where(
@@ -58,19 +59,17 @@ async def audit_transcript(
     missing_steps = [step for step in REQUIRED_STEPS if step not in found_steps]
 
     is_compliant = len(missing_steps) == 0
-    risk_level = "LOW" if is_compliant else "HIGH"
 
-    return {
-        "compliant": is_compliant,
-        "risk_level": risk_level,
-        "missing_steps": missing_steps,
-    }
+    return SupervisorAuditResult(
+        compliant=is_compliant,
+        violations=[f"missing_{step}" for step in missing_steps],
+    )
 
 
 async def check_phi_leak(
     session: AsyncSession,
     conversation_id: uuid.UUID,
-) -> dict:
+) -> SupervisorAuditResult:
     """Check for PHI keywords disclosed before identity verification.
 
     Scans transcript entries that occur before the identity_verified
@@ -81,7 +80,7 @@ async def check_phi_leak(
         conversation_id: Conversation UUID to check.
 
     Returns:
-        Dict with phi_leaked bool and details list.
+        SupervisorAuditResult with PHI detection status.
     """
     result = await session.execute(
         select(Conversation).where(
@@ -96,10 +95,11 @@ async def check_phi_leak(
     pre_identity_entries = _extract_pre_identity_entries(entries)
     details = _scan_entries_for_phi(pre_identity_entries)
 
-    return {
-        "phi_leaked": len(details) > 0,
-        "details": details,
-    }
+    return SupervisorAuditResult(
+        compliant=len(details) == 0,
+        phi_detected=len(details) > 0,
+        violations=[f"phi_leak:{d['keyword']}@{d['step']}" for d in details],
+    )
 
 
 def _extract_pre_identity_entries(entries: list[dict]) -> list[dict]:
@@ -146,7 +146,7 @@ async def detect_answer_inconsistencies(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> DeceptionResult:
     """Detect contradictory screening answers from different sources.
 
     Compares answers for each screening question. When the same
@@ -159,7 +159,7 @@ async def detect_answer_inconsistencies(
         trial_id: Trial identifier.
 
     Returns:
-        Dict with inconsistencies_found bool and flagged_questions list.
+        DeceptionResult with inconsistency detection status.
     """
     participant_trial = await get_participant_trial(
         session,
@@ -174,10 +174,10 @@ async def detect_answer_inconsistencies(
         if _has_inconsistent_answers(value):
             flagged_questions.append(question)
 
-    return {
-        "inconsistencies_found": len(flagged_questions) > 0,
-        "flagged_questions": flagged_questions,
-    }
+    return DeceptionResult(
+        deception_detected=len(flagged_questions) > 0,
+        discrepancies=[{"field": q, "source": "multi_provenance"} for q in flagged_questions],
+    )
 
 
 def _has_inconsistent_answers(value: dict | list) -> bool:
@@ -199,7 +199,7 @@ async def audit_provenance(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> SupervisorAuditResult:
     """Verify all screening responses have valid provenance.
 
     Valid provenances are: patient_stated, ehr, coordinator, system.
@@ -210,7 +210,7 @@ async def audit_provenance(
         trial_id: Trial identifier.
 
     Returns:
-        Dict with all_valid bool and missing_provenance list.
+        SupervisorAuditResult with provenance audit status.
     """
     participant_trial = await get_participant_trial(
         session,
@@ -225,10 +225,10 @@ async def audit_provenance(
         if not _has_valid_provenance(value):
             missing_provenance.append(question)
 
-    return {
-        "all_valid": len(missing_provenance) == 0,
-        "missing_provenance": missing_provenance,
-    }
+    return SupervisorAuditResult(
+        compliant=len(missing_provenance) == 0,
+        violations=[f"missing_provenance:{q}" for q in missing_provenance],
+    )
 
 
 def _has_valid_provenance(value: dict | list) -> bool:

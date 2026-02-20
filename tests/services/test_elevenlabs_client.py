@@ -210,6 +210,24 @@ class TestBuildSystemPrompt:
         assert "eligible=false" in result
         assert "Do NOT second-guess the tool result" in result
 
+    def test_system_prompt_mandates_safety_check_every_response(self) -> None:
+        """System prompt requires safety_check before every response."""
+        result = build_system_prompt(
+            trial_name="Study",
+            site_name="Site",
+            coordinator_phone="+10000000000",
+            inclusion_criteria={},
+            exclusion_criteria={},
+            visit_templates={},
+        )
+        assert "CRITICAL SAFETY RULE" in result
+        assert "MUST call the safety_check tool" in result
+        assert "before delivering ANY response" in result
+        assert "No exceptions" in result
+        assert "safety_check: MANDATORY" in result
+        assert "call before EVERY response" in result
+        assert "non-negotiable safety requirement" in result
+
     def test_handles_empty_criteria(self) -> None:
         """System prompt handles empty criteria gracefully."""
         result = build_system_prompt(

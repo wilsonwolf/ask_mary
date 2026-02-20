@@ -18,15 +18,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from agents import Agent, function_tool
 from src.db.postgres import get_participant_trial
 from src.services.cloud_tasks_client import enqueue_reminder
+from src.shared.response_models import (
+    DeceptionResult,
+    ReminderResult,
+    VerificationPromptsResult,
+)
+from src.shared.types import AdversarialCheckStatus, Channel, Provenance
 
 RECHECK_DELAY_DAYS = 14
+
+PROMPT_TEMPLATES: dict[str, str] = {
+    "dob": "Could you confirm your date of birth one more time?",
+    "age": "Just to double-check, could you tell me your age?",
+    "zip": "Could you confirm your ZIP code for me?",
+}
 
 
 async def detect_deception(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> DeceptionResult:
     """Compare screening responses against EHR discrepancies.
 
     Args:
@@ -35,11 +47,11 @@ async def detect_deception(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with 'deception_detected' bool and 'discrepancies' list.
+        DeceptionResult with deception status and discrepancies.
     """
     pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
-        return {"deception_detected": False, "discrepancies": []}
+        return DeceptionResult(deception_detected=False)
 
     responses = pt.screening_responses or {}
     ehr_data = pt.ehr_discrepancies or {}
@@ -59,17 +71,56 @@ async def detect_deception(
                 }
             )
 
-    return {
-        "deception_detected": len(discrepancies) > 0,
-        "discrepancies": discrepancies,
-    }
+    return DeceptionResult(
+        deception_detected=len(discrepancies) > 0,
+        discrepancies=discrepancies,
+    )
+
+
+async def generate_verification_prompts(
+    session: AsyncSession,
+    participant_id: uuid.UUID,
+    trial_id: str,
+) -> VerificationPromptsResult:
+    """Generate natural-language verification prompts from discrepancies.
+
+    Runs detect_deception, builds a prompt per discrepancy, and
+    stores the results on the ParticipantTrial record.
+
+    Args:
+        session: Active database session.
+        participant_id: Participant UUID.
+        trial_id: Trial string identifier.
+
+    Returns:
+        VerificationPromptsResult with prompts and discrepancies.
+    """
+    deception = await detect_deception(session, participant_id, trial_id)
+    discrepancies = deception.discrepancies
+    prompts = [
+        PROMPT_TEMPLATES.get(d["field"], f"Could you confirm your {d['field']} for me?")
+        for d in discrepancies
+    ]
+    participant_trial = await get_participant_trial(session, participant_id, trial_id)
+    if participant_trial is not None:
+        participant_trial.adversarial_results = {
+            "check_status": AdversarialCheckStatus.COMPLETE,
+            "discrepancies": discrepancies,
+            "prompts": prompts,
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
+    return VerificationPromptsResult(
+        check_status=AdversarialCheckStatus.COMPLETE,
+        prompts=prompts,
+        discrepancies=discrepancies,
+    )
 
 
 async def schedule_recheck(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> ReminderResult:
     """Schedule a T+14 day adversarial recheck via Cloud Tasks.
 
     Args:
@@ -78,7 +129,7 @@ async def schedule_recheck(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with 'scheduled' bool and 'task_id' string.
+        ReminderResult with scheduled status and task_id.
     """
     send_at = datetime.now(UTC) + timedelta(days=RECHECK_DELAY_DAYS)
     idempotency_key = f"recheck-{participant_id}-{trial_id}"
@@ -86,18 +137,18 @@ async def schedule_recheck(
         participant_id=participant_id,
         appointment_id=uuid.uuid4(),
         template_id="adversarial_recheck",
-        channel="system",
+        channel=Channel.SYSTEM,
         send_at=send_at,
         idempotency_key=idempotency_key,
     )
-    return {"scheduled": True, "task_id": result.task_id}
+    return ReminderResult(scheduled=True, task_id=result.task_id)
 
 
 async def run_adversarial_rescreen(
     session: AsyncSession,
     participant_id: uuid.UUID,
     trial_id: str,
-) -> dict:
+) -> DeceptionResult:
     """Run adversarial rescreen and record results on ParticipantTrial.
 
     Loads the junction record, marks recheck as done, and stores
@@ -109,19 +160,22 @@ async def run_adversarial_rescreen(
         trial_id: Trial string identifier.
 
     Returns:
-        Dict with 'rescreened' bool and 'results' dict.
+        DeceptionResult with rescreen status.
     """
     pt = await get_participant_trial(session, participant_id, trial_id)
     if pt is None:
-        return {"rescreened": False, "error": "participant_trial_not_found"}
+        return DeceptionResult(deception_detected=False)
 
     now_iso = datetime.now(UTC).isoformat()
     pt.adversarial_recheck_done = True
     pt.adversarial_results = {
         "rescreened_at": now_iso,
-        "provenance": "system",
+        "provenance": Provenance.SYSTEM,
     }
-    return {"rescreened": True, "results": pt.adversarial_results}
+    return DeceptionResult(
+        deception_detected=False,
+        recheck_scheduled=False,
+    )
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

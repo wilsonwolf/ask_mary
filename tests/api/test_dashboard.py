@@ -11,6 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.app import create_app
 from src.db.session import get_async_session
+from src.shared.types import (
+    AppointmentStatus,
+    Channel,
+    ConversationStatus,
+    Direction,
+    HandoffReason,
+    HandoffSeverity,
+    HandoffStatus,
+    IdentityStatus,
+)
 
 
 @pytest.fixture
@@ -26,7 +36,7 @@ def _mock_participant(pid: uuid.UUID | None = None) -> MagicMock:
     p.first_name = "Jane"
     p.last_name = "Tester"
     p.phone = "+15550001234"
-    p.identity_status = "verified"
+    p.identity_status = IdentityStatus.VERIFIED
     p.created_at = datetime(2026, 1, 1, tzinfo=UTC)
     p.trials = []
     return p
@@ -40,7 +50,7 @@ def _mock_appointment() -> MagicMock:
     a.trial_id = "diabetes-study-a"
     a.visit_type = "screening"
     a.scheduled_at = datetime(2026, 2, 10, 9, 0, tzinfo=UTC)
-    a.status = "booked"
+    a.status = AppointmentStatus.BOOKED
     a.site_name = "City Clinic"
     return a
 
@@ -50,9 +60,9 @@ def _mock_handoff() -> MagicMock:
     h = MagicMock()
     h.handoff_id = uuid.uuid4()
     h.participant_id = uuid.uuid4()
-    h.reason = "medical_advice"
-    h.severity = "HANDOFF_NOW"
-    h.status = "open"
+    h.reason = HandoffReason.MEDICAL_ADVICE
+    h.severity = HandoffSeverity.HANDOFF_NOW
+    h.status = HandoffStatus.OPEN
     h.summary = "Participant reports chest pain"
     h.created_at = datetime(2026, 2, 8, tzinfo=UTC)
     return h
@@ -63,9 +73,9 @@ def _mock_conversation() -> MagicMock:
     c = MagicMock()
     c.conversation_id = uuid.uuid4()
     c.participant_id = uuid.uuid4()
-    c.channel = "voice"
-    c.direction = "outbound"
-    c.status = "completed"
+    c.channel = Channel.VOICE
+    c.direction = Direction.OUTBOUND
+    c.status = ConversationStatus.COMPLETED
     c.started_at = datetime(2026, 2, 8, 10, 0, tzinfo=UTC)
     return c
 
@@ -193,7 +203,7 @@ class TestHandoffQueue:
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 1
-            assert data[0]["severity"] == "HANDOFF_NOW"
+            assert data[0]["severity"] == HandoffSeverity.HANDOFF_NOW
         finally:
             app.dependency_overrides.clear()
 
@@ -221,7 +231,7 @@ class TestConversations:
             assert response.status_code == 200
             data = response.json()
             assert len(data) == 1
-            assert data[0]["channel"] == "voice"
+            assert data[0]["channel"] == Channel.VOICE
         finally:
             app.dependency_overrides.clear()
 
@@ -279,6 +289,75 @@ class TestAnalyticsSummary:
         finally:
             app.dependency_overrides.clear()
 
+    async def test_returns_all_three_integer_fields(self, app) -> None:
+        """Response contains all three expected keys with integer values."""
+        participants_result = MagicMock()
+        participants_result.scalar.return_value = 10
+
+        appointments_result = MagicMock()
+        appointments_result.scalar.return_value = 5
+
+        handoffs_result = MagicMock()
+        handoffs_result.scalar.return_value = 2
+
+        session = AsyncMock(spec=AsyncSession)
+        session.execute = AsyncMock(
+            side_effect=[
+                participants_result,
+                appointments_result,
+                handoffs_result,
+            ],
+        )
+
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.get("/api/analytics/summary")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total_participants"] == 10
+            assert data["total_appointments"] == 5
+            assert data["open_handoffs"] == 2
+            assert isinstance(data["total_participants"], int)
+            assert isinstance(data["total_appointments"], int)
+            assert isinstance(data["open_handoffs"], int)
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_returns_zero_when_no_records(self, app) -> None:
+        """Returns zero for all counts when database has no records."""
+        mock_count = MagicMock()
+        mock_count.scalar.return_value = None
+
+        session = _fake_session(mock_count)
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.get("/api/analytics/summary")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["total_participants"] == 0
+            assert data["total_appointments"] == 0
+            assert data["open_handoffs"] == 0
+        finally:
+            app.dependency_overrides.clear()
+
 
 class TestDemoStartCall:
     """POST /api/demo/start-call endpoint."""
@@ -301,13 +380,16 @@ class TestDemoStartCall:
         }
 
         try:
-            with patch(
-                "src.api.dashboard._call_elevenlabs",
-                new_callable=AsyncMock,
-                return_value=elevenlabs_response,
-            ), patch(
-                "src.db.events.log_event",
-                new_callable=AsyncMock,
+            with (
+                patch(
+                    "src.api.dashboard._call_elevenlabs",
+                    new_callable=AsyncMock,
+                    return_value=elevenlabs_response,
+                ),
+                patch(
+                    "src.db.events.log_event",
+                    new_callable=AsyncMock,
+                ),
             ):
                 transport = ASGITransport(app=app)
                 async with AsyncClient(
@@ -375,9 +457,7 @@ class TestDemoConfig:
         mock_participant.phone = "+15551234567"
 
         mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = (
-            mock_participant
-        )
+        mock_result.scalars.return_value.first.return_value = mock_participant
         session = _fake_session(mock_result)
         app.dependency_overrides[get_async_session] = _override_session(session)
 
@@ -431,3 +511,221 @@ class TestDemoConfig:
             assert data["error"] == "demo participant not found"
         finally:
             app.dependency_overrides.clear()
+
+
+def _mock_participant_trial(
+    participant_id: uuid.UUID | None = None,
+    adversarial_results: dict | None = None,
+) -> MagicMock:
+    """Build a mock ParticipantTrial ORM object.
+
+    Args:
+        participant_id: Optional participant UUID override.
+        adversarial_results: Optional adversarial check results.
+
+    Returns:
+        MagicMock ParticipantTrial.
+    """
+    pt = MagicMock()
+    pt.participant_trial_id = uuid.uuid4()
+    pt.participant_id = participant_id or uuid.uuid4()
+    pt.trial_id = "diabetes-study-a"
+    pt.pipeline_status = "screening"
+    pt.eligibility_status = "pending"
+    pt.adversarial_results = adversarial_results
+    pt.adversarial_recheck_done = adversarial_results is not None
+    return pt
+
+
+class TestAdversarialStatus:
+    """GET /api/participants/{id}/adversarial-status endpoint."""
+
+    async def test_get_adversarial_status_pending(self, app) -> None:
+        """Returns pending when no adversarial_results exist."""
+        pid = uuid.uuid4()
+        mock_pt = _mock_participant_trial(pid, adversarial_results=None)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_pt
+
+        session = _fake_session(mock_result)
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.get(
+                    f"/api/participants/{pid}/adversarial-status",
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["check_status"] == "pending"
+        finally:
+            app.dependency_overrides.clear()
+
+    async def test_get_adversarial_status_complete(self, app) -> None:
+        """Returns complete with results when adversarial_results exist."""
+        pid = uuid.uuid4()
+        results = {
+            "discrepancies": ["dob_mismatch"],
+            "confidence": 0.85,
+        }
+        mock_pt = _mock_participant_trial(pid, adversarial_results=results)
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.first.return_value = mock_pt
+
+        session = _fake_session(mock_result)
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.get(
+                    f"/api/participants/{pid}/adversarial-status",
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["check_status"] == "complete"
+            assert data["discrepancies"] == ["dob_mismatch"]
+            assert data["confidence"] == 0.85
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestResolveHandoff:
+    """POST /api/handoffs/{id}/resolve endpoint."""
+
+    async def test_resolve_handoff(self, app) -> None:
+        """Resolves a handoff and updates status fields."""
+        hid = uuid.uuid4()
+        mock_handoff = _mock_handoff()
+        mock_handoff.handoff_id = hid
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_handoff
+
+        session = _fake_session(mock_result)
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    f"/api/handoffs/{hid}/resolve",
+                    json={
+                        "resolution": "Called participant back",
+                        "resolved_by": "Dr. Smith",
+                    },
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "resolved"
+            assert data["resolution"] == "Called participant back"
+            assert data["resolved_by"] == "Dr. Smith"
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestAssignHandoff:
+    """POST /api/handoffs/{id}/assign endpoint."""
+
+    async def test_assign_handoff(self, app) -> None:
+        """Assigns a handoff to a coordinator."""
+        hid = uuid.uuid4()
+        mock_handoff = _mock_handoff()
+        mock_handoff.handoff_id = hid
+        mock_result = MagicMock()
+        mock_result.scalar_one_or_none.return_value = mock_handoff
+
+        session = _fake_session(mock_result)
+        app.dependency_overrides[get_async_session] = _override_session(
+            session,
+        )
+
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    f"/api/handoffs/{hid}/assign",
+                    json={"assigned_to": "Dr. Jones"},
+                )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "assigned"
+            assert data["assigned_to"] == "Dr. Jones"
+        finally:
+            app.dependency_overrides.clear()
+
+
+class TestGetParticipantDetail:
+    """GET /api/participants/{id} enhanced detail endpoint."""
+
+    async def test_get_participant_detail(self, app) -> None:
+        """Returns full participant detail with nested data."""
+        pid = uuid.uuid4()
+        mock_p = _mock_participant(pid)
+
+        # Set up trial enrollments
+        mock_trial = _mock_participant_trial(pid)
+        mock_p.trials = [mock_trial]
+
+        # Set up conversations
+        mock_conv = _mock_conversation()
+        mock_conv.participant_id = pid
+        mock_p.conversations = [mock_conv]
+
+        # Set up appointments
+        mock_appt = _mock_appointment()
+        mock_appt.participant_id = pid
+        mock_appt.status = AppointmentStatus.BOOKED
+        mock_p.appointments = [mock_appt]
+
+        with patch(
+            "src.api.dashboard.get_participant_by_id",
+            new_callable=AsyncMock,
+            return_value=mock_p,
+        ):
+            session = _fake_session(MagicMock())
+            app.dependency_overrides[get_async_session] = _override_session(
+                session,
+            )
+
+            try:
+                transport = ASGITransport(app=app)
+                async with AsyncClient(
+                    transport=transport,
+                    base_url="http://test",
+                ) as client:
+                    response = await client.get(
+                        f"/api/participants/{pid}",
+                    )
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["participant_id"] == str(pid)
+                assert data["first_name"] == "Jane"
+                assert len(data["trials"]) == 1
+                assert len(data["conversations"]) == 1
+                assert len(data["appointments"]) == 1
+            finally:
+                app.dependency_overrides.clear()

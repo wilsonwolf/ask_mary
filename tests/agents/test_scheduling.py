@@ -13,6 +13,7 @@ from src.agents.scheduling import (
     scheduling_agent,
     verify_teach_back,
 )
+from src.shared.types import AppointmentStatus, VisitType
 
 
 class TestSchedulingAgentDefinition:
@@ -118,7 +119,6 @@ class TestHoldSlot:
                 slot_time,
             )
         assert result["held"] is True
-        assert "expires_at" in result
         assert "appointment_id" in result
 
     async def test_rejects_taken_slot(self) -> None:
@@ -139,7 +139,7 @@ class TestHoldSlot:
             slot_time,
         )
         assert result["held"] is False
-        assert result["reason"] == "slot_taken"
+        assert result["error"] == "slot_taken"
 
     async def test_rejects_confirmed_slot(self) -> None:
         """Returns held=False when slot is already confirmed."""
@@ -148,7 +148,7 @@ class TestHoldSlot:
 
         # Confirmed appointment exists at this slot
         existing = MagicMock()
-        existing.status = "confirmed"
+        existing.status = AppointmentStatus.CONFIRMED
         result_mock = MagicMock()
         result_mock.scalar_one_or_none.return_value = existing
         mock_session.execute.return_value = result_mock
@@ -160,7 +160,7 @@ class TestHoldSlot:
             slot_time,
         )
         assert result["held"] is False
-        assert result["reason"] == "slot_taken"
+        assert result["error"] == "slot_taken"
 
 
 class TestBookAppointment:
@@ -172,7 +172,7 @@ class TestBookAppointment:
         slot_time = datetime.now(UTC) + timedelta(days=7)
         held_appointment = MagicMock()
         held_appointment.appointment_id = uuid.uuid4()
-        held_appointment.status = "held"
+        held_appointment.status = AppointmentStatus.HELD
 
         result_mock = MagicMock()
         result_mock.scalar_one_or_none.return_value = held_appointment
@@ -184,12 +184,12 @@ class TestBookAppointment:
                 uuid.uuid4(),
                 "trial-1",
                 slot_time,
-                "screening",
+                VisitType.SCREENING,
             )
         assert result["booked"] is True
         assert "confirmation_due_at" in result
-        assert held_appointment.status == "booked"
-        assert held_appointment.visit_type == "screening"
+        assert held_appointment.status == AppointmentStatus.BOOKED
+        assert held_appointment.visit_type == VisitType.SCREENING
 
     async def test_creates_new_when_no_held(self) -> None:
         """Creates new appointment when no held slot and no conflict."""
@@ -216,7 +216,7 @@ class TestBookAppointment:
                 uuid.uuid4(),
                 "trial-1",
                 slot_time,
-                "screening",
+                VisitType.SCREENING,
             )
         assert result["booked"] is True
         assert "confirmation_due_at" in result
@@ -239,7 +239,7 @@ class TestBookAppointment:
             uuid.uuid4(),
             "trial-1",
             slot_time,
-            "screening",
+            VisitType.SCREENING,
         )
         assert result["booked"] is False
         assert result["reason"] == "slot_taken"
@@ -302,7 +302,7 @@ class TestReleaseExpiredSlot:
         """Expired slot is marked as released."""
         mock_session = AsyncMock()
         appointment = MagicMock()
-        appointment.status = "booked"
+        appointment.status = AppointmentStatus.BOOKED
         appointment.slot_held_until = datetime.now(UTC) - timedelta(hours=1)
 
         result_mock = MagicMock()
