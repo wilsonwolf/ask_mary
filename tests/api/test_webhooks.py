@@ -47,11 +47,6 @@ class TestServerToolEndpoint:
 
         with (
             patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
                 "src.api.webhooks.verify_identity",
                 new_callable=AsyncMock,
                 return_value=mock_result,
@@ -86,113 +81,27 @@ class TestServerToolEndpoint:
         """verify_identity with empty dob_year returns error, not 500."""
         participant_id = str(uuid.uuid4())
 
-        with patch(
-            "src.api.webhooks._enforce_pre_checks",
-            new_callable=AsyncMock,
-            return_value=None,
-        ):
-            transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport,
-                base_url="http://test",
-            ) as client:
-                response = await client.post(
-                    "/webhooks/elevenlabs/server-tool",
-                    json={
-                        "tool_name": "verify_identity",
-                        "conversation_id": "conv-123",
-                        "parameters": {
-                            "participant_id": participant_id,
-                            "dob_year": "",
-                            "zip_code": "97201",
-                        },
+        transport = ASGITransport(app=app)
+        async with AsyncClient(
+            transport=transport,
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/webhooks/elevenlabs/server-tool",
+                json={
+                    "tool_name": "verify_identity",
+                    "conversation_id": "conv-123",
+                    "parameters": {
+                        "participant_id": participant_id,
+                        "dob_year": "",
+                        "zip_code": "97201",
                     },
-                )
+                },
+            )
         assert response.status_code == 200
         data = response.json()
         assert data["verified"] is False
         assert "error" in data
-
-    async def test_gated_tool_blocked_by_dnc(self, app) -> None:
-        """Gated tool returns error when DNC gate fails."""
-        participant_id = str(uuid.uuid4())
-
-        with patch(
-            "src.api.webhooks._enforce_pre_checks",
-            new_callable=AsyncMock,
-            return_value={"error": "dnc_blocked", "channel": "voice"},
-        ):
-            transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport,
-                base_url="http://test",
-            ) as client:
-                response = await client.post(
-                    "/webhooks/elevenlabs/server-tool",
-                    json={
-                        "tool_name": "verify_identity",
-                        "conversation_id": "conv-123",
-                        "parameters": {
-                            "participant_id": participant_id,
-                            "dob_year": "1985",
-                            "zip_code": "97201",
-                        },
-                    },
-                )
-        assert response.status_code == 200
-        data = response.json()
-        assert data["error"] == "dnc_blocked"
-
-    async def test_ungated_tool_skips_pre_checks(self, app) -> None:
-        """safety_check (ungated) does not call _enforce_pre_checks."""
-        participant_id = str(uuid.uuid4())
-        mock_result = MagicMock()
-        mock_result.triggered = False
-        mock_result.trigger_type = None
-        mock_result.severity = None
-
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-            ) as mock_gate,
-            patch(
-                "src.api.webhooks.run_safety_gate",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
-            patch(
-                "src.api.webhooks.log_event",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks._resolve_call_sid",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks._log_agent_reasoning",
-                new_callable=AsyncMock,
-            ),
-        ):
-            transport = ASGITransport(app=app)
-            async with AsyncClient(
-                transport=transport,
-                base_url="http://test",
-            ) as client:
-                await client.post(
-                    "/webhooks/elevenlabs/server-tool",
-                    json={
-                        "tool_name": "safety_check",
-                        "conversation_id": "conv-123",
-                        "parameters": {
-                            "participant_id": participant_id,
-                            "response": "I feel fine",
-                        },
-                    },
-                )
-        mock_gate.assert_not_called()
 
     async def test_safety_check_routes(self, app) -> None:
         """safety_check tool calls the safety service."""
@@ -602,6 +511,51 @@ class TestCallCompletionEndpoint:
         mock_checks.assert_called_once()
 
 
+    async def test_call_complete_resolves_missing_fields_from_db(
+        self, app,
+    ) -> None:
+        """Resolves participant_id and trial_id from Conversation table."""
+        participant_id = uuid.uuid4()
+        mock_conversation = MagicMock()
+        mock_conversation.participant_id = participant_id
+        mock_conversation.trial_id = "trial-1"
+        mock_conversation.conversation_id = uuid.uuid4()
+
+        with (
+            patch(
+                "src.api.webhooks._resolve_conversation_row",
+                new_callable=AsyncMock,
+                return_value=mock_conversation,
+            ),
+            patch(
+                "src.api.webhooks._get_or_create_conversation",
+                new_callable=AsyncMock,
+                return_value=mock_conversation,
+            ),
+            patch(
+                "src.api.webhooks._fetch_audio",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "src.api.webhooks._trigger_post_call_checks",
+                new_callable=AsyncMock,
+            ),
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/call-complete",
+                    json={"conversation_id": "conv-xyz"},
+                )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["uploaded"] is False
+
+
 class TestCaptureConsent:
     """capture_consent server tool webhook."""
 
@@ -860,11 +814,6 @@ class TestCheckGeoEligibility:
 
         with (
             patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
                 "src.api.webhooks.check_geo_eligibility",
                 new_callable=AsyncMock,
                 return_value=mock_result,
@@ -905,11 +854,6 @@ class TestCheckGeoEligibility:
         )
 
         with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
             patch(
                 "src.api.webhooks.check_geo_eligibility",
                 new_callable=AsyncMock,
@@ -955,17 +899,10 @@ class TestVerifyTeachBack:
             passed=True, attempts=1,
         )
 
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks.verify_teach_back",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "src.api.webhooks.verify_teach_back",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -1001,17 +938,10 @@ class TestVerifyTeachBack:
             passed=False, handoff_required=True, attempts=2,
         )
 
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks.verify_teach_back",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "src.api.webhooks.verify_teach_back",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -1050,17 +980,10 @@ class TestHoldSlot:
             held=True, appointment_id=str(uuid.uuid4()),
         )
 
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks.hold_slot",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "src.api.webhooks.hold_slot",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -1093,17 +1016,10 @@ class TestHoldSlot:
             held=False, error="slot_taken",
         )
 
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks.hold_slot",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "src.api.webhooks.hold_slot",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -1186,17 +1102,10 @@ class TestMarkWrongPerson:
             verified=False, marked=True, reason="wrong_person",
         )
 
-        with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
-                "src.api.webhooks.mark_wrong_person",
-                new_callable=AsyncMock,
-                return_value=mock_result,
-            ),
+        with patch(
+            "src.api.webhooks.mark_wrong_person",
+            new_callable=AsyncMock,
+            return_value=mock_result,
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(

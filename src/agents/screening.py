@@ -110,10 +110,12 @@ async def record_screening_response(
 
     responses = pt.screening_responses or {}
     history_key = f"{question_key}_history"
-    if question_key in responses:
+    is_correction = question_key in responses
+    if is_correction:
         history = responses.get(history_key, [])
         history.append(responses[question_key])
         responses[history_key] = history
+        pt.eligibility_status = EligibilityStatus.PENDING
     responses[question_key] = {
         "answer": answer,
         "provenance": provenance,

@@ -25,11 +25,6 @@ class TestCheckAvailabilityHandler:
 
         with (
             patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
                 "src.api.webhooks.find_available_slots",
                 new_callable=AsyncMock,
                 return_value=mock_slots,
@@ -72,11 +67,6 @@ class TestCheckAvailabilityHandler:
         mock_event.created_at = "2026-03-01T00:00:00"
 
         with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
             patch(
                 "src.api.webhooks.find_available_slots",
                 new_callable=AsyncMock,
@@ -127,11 +117,6 @@ class TestBookAppointmentHandler:
         }
 
         with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
             patch(
                 "src.api.webhooks.book_appointment",
                 new_callable=AsyncMock,
@@ -186,11 +171,6 @@ class TestBookAppointmentHandler:
 
         with (
             patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
                 "src.api.webhooks.book_appointment",
                 new_callable=AsyncMock,
                 return_value=mock_result,
@@ -242,11 +222,6 @@ class TestToolAliases:
 
         with (
             patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
-            patch(
                 "src.api.webhooks.record_screening_response",
                 new_callable=AsyncMock,
                 return_value=mock_result,
@@ -287,11 +262,6 @@ class TestToolAliases:
         mock_trial.trial_name = "Diabetes Study A"
 
         with (
-            patch(
-                "src.api.webhooks._enforce_pre_checks",
-                new_callable=AsyncMock,
-                return_value=None,
-            ),
             patch(
                 "src.api.webhooks.determine_eligibility",
                 new_callable=AsyncMock,

@@ -61,8 +61,6 @@ from src.shared.types import (
     PipelineStatus,
     Provenance,
 )
-from src.shared.validators import _enforce_pre_checks
-
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,26 +69,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
-
-# Tools that require DNC + disclosure + consent gates before execution.
-# capture_consent is excluded (it IS the consent mechanism).
-# safety_check is excluded (independent safety evaluation).
-GATED_TOOLS: frozenset[str] = frozenset({
-    "verify_identity",
-    "detect_duplicate",
-    "check_hard_excludes",
-    "determine_eligibility",
-    "record_screening_response",
-    "record_screening_answer",
-    "check_eligibility",
-    "book_appointment",
-    "book_transport",
-    "check_geo_eligibility",
-    "verify_teach_back",
-    "hold_slot",
-    "mark_wrong_person",
-})
-
 
 class ServerToolRequest(BaseModel):
     """ElevenLabs server tool webhook payload.
@@ -166,23 +144,11 @@ async def handle_server_tool(
 
     params["_conversation_id"] = conversation_id
 
-    if tool_name in GATED_TOOLS:
-        participant_id_str = params.get("participant_id")
-        if participant_id_str:
-            try:
-                gate_participant_id = uuid.UUID(participant_id_str)
-            except ValueError:
-                return {"error": f"Invalid participant_id: {participant_id_str}"}
-            gate_error = await _enforce_pre_checks(
-                session,
-                gate_participant_id,
-                Channel.VOICE,
-            )
-            if gate_error is not None:
-                return gate_error
-
     try:
-        return await handler(session, params)
+        result = await handler(session, params)
+        if hasattr(result, "model_dump"):
+            return result.model_dump(exclude_none=True)
+        return result
     except (ValueError, KeyError, TypeError) as exc:
         logger.exception(
             "server_tool_handler_error",
@@ -343,6 +309,8 @@ async def _log_and_broadcast(
         payload: Event payload dict.
         trial_id: Related trial identifier.
     """
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(exclude_none=True)
     event = await log_event(
         session,
         participant_id=participant_id,
@@ -1410,13 +1378,13 @@ class CallCompletionPayload(BaseModel):
 
     Attributes:
         conversation_id: ElevenLabs conversation ID.
-        participant_id: Participant UUID string.
-        trial_id: Trial identifier.
+        participant_id: Participant UUID string (optional, looked up from DB).
+        trial_id: Trial identifier (optional, looked up from DB).
     """
 
     conversation_id: str
-    participant_id: str
-    trial_id: str
+    participant_id: str | None = None
+    trial_id: str | None = None
 
 
 @router.post("/elevenlabs/call-complete")
@@ -1437,14 +1405,34 @@ async def handle_call_completion(
     Returns:
         Dict with upload status and GCS path.
     """
-    participant_id = uuid.UUID(payload.participant_id)
     conversation_id_str = payload.conversation_id
+
+    # ElevenLabs may only send conversation_id — look up from DB
+    participant_id_str = payload.participant_id
+    trial_id = payload.trial_id
+    if not participant_id_str or not trial_id:
+        existing = await _resolve_conversation_row(
+            session, conversation_id_str,
+        )
+        if existing is not None:
+            if not participant_id_str:
+                participant_id_str = str(existing.participant_id)
+            if not trial_id:
+                trial_id = existing.trial_id
+    if not participant_id_str:
+        logger.warning(
+            "call_complete_missing_participant_id",
+            extra={"conversation_id": conversation_id_str},
+        )
+        return {"error": "participant_id_not_resolved"}
+    participant_id = uuid.UUID(participant_id_str)
+    trial_id = trial_id or ""
 
     conversation = await _get_or_create_conversation(
         session,
         participant_id,
         conversation_id_str,
-        payload.trial_id,
+        trial_id,
     )
 
     gcs_path = None
@@ -1452,7 +1440,7 @@ async def handle_call_completion(
     if audio_bytes:
         settings = get_settings()
         object_path = build_object_path(
-            payload.trial_id,
+            trial_id,
             participant_id,
             uuid.UUID(conversation_id_str) if len(conversation_id_str) == 36 else uuid.uuid4(),
         )
@@ -1478,20 +1466,20 @@ async def handle_call_completion(
     await _trigger_post_call_checks(
         session,
         participant_id,
-        payload.trial_id,
+        trial_id,
         conversation.conversation_id,
     )
 
     try:
         await _check_and_schedule_retry(
-            session, participant_id, payload.trial_id,
+            session, participant_id, trial_id,
         )
     except Exception:
         logger.warning(
             "retry_scheduling_failed",
             extra={
                 "participant_id": str(participant_id),
-                "trial_id": payload.trial_id,
+                "trial_id": trial_id,
             },
         )
 

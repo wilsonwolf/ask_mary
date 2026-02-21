@@ -93,6 +93,24 @@ class TestFindAvailableSlots:
         assert isinstance(result["slots"], list)
 
 
+    async def test_filters_past_dates(self) -> None:
+        """Past dates are excluded from available slots."""
+        mock_session = AsyncMock()
+        trial = MagicMock()
+        trial.operating_hours = {
+            "monday": {"open": "08:00", "close": "17:00"},
+            "wednesday": {"open": "09:00", "close": "16:00"},
+        }
+        past_date = "2025-01-06"  # A Monday in the past
+        future_date = (datetime.now(UTC) + timedelta(days=30)).strftime("%Y-%m-%d")
+        with patch("src.agents.scheduling.get_trial", return_value=trial):
+            result = await find_available_slots(
+                mock_session, "trial-1", [past_date, future_date],
+            )
+        datetimes = [s["datetime"] for s in result["slots"]]
+        assert not any(past_date in d for d in datetimes)
+
+
 class TestHoldSlot:
     """Slot hold with SELECT FOR UPDATE."""
 

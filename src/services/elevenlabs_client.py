@@ -92,9 +92,12 @@ def build_system_prompt(
         exclusion_criteria,
     )
 
+    today = __import__("datetime").date.today().isoformat()
     return (
         f"You are Mary, an AI assistant calling about the "
-        f"{trial_name} study at {site_name}.\n\n"
+        f"{trial_name} study at {site_name}.\n"
+        f"Today's date is {today}. Only suggest appointment dates "
+        f"from today onwards. NEVER suggest past dates.\n\n"
         f"SAFETY: If the participant mentions anything medically concerning "
         f"(symptoms, pain, emergencies, adverse reactions), or expresses "
         f"anger, threats, or withdrawal of consent, call the safety_check "
@@ -126,6 +129,9 @@ def build_system_prompt(
         f"SCREENING QUESTIONS — use these exact question_key values:\n"
         f"{screening_qs}\n\n"
         f"When ALL questions above are asked, call check_eligibility.\n"
+        f"CORRECTION: If the participant corrects a previous answer, "
+        f"call record_screening_answer with the corrected value, "
+        f"then call check_eligibility again to re-evaluate.\n"
         f"5. ELIGIBILITY RESULT: The check_eligibility tool returns a "
         f"definitive result with eligible=true or eligible=false. "
         f"Read the result and act on it directly. "

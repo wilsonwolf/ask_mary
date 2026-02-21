@@ -77,8 +77,11 @@ async def find_available_slots(
     hours = trial.operating_hours or {}
     slots: list[dict[str, str]] = []
 
+    today = datetime.now(UTC).date()
     for date_str in preferred_dates:
         dt = datetime.fromisoformat(date_str)
+        if dt.date() < today:
+            continue
         day_name = dt.strftime("%A").lower()
         day_hours = hours.get(day_name, {})
         if day_hours:

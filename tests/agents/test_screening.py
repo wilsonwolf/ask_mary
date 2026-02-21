@@ -116,6 +116,35 @@ class TestRecordScreeningResponse:
         )
         assert result["recorded"] is True
 
+    async def test_correction_resets_eligibility_to_pending(self) -> None:
+        """Correcting an answer resets eligibility_status to PENDING."""
+        mock_session = AsyncMock()
+        pt = MagicMock()
+        pt.screening_responses = {
+            "insulin_dependent": {
+                "answer": "yes",
+                "provenance": "patient_stated",
+            },
+        }
+        pt.eligibility_status = EligibilityStatus.INELIGIBLE
+
+        result_mock = MagicMock()
+        result_mock.scalar_one_or_none.return_value = pt
+        mock_session.execute.return_value = result_mock
+
+        result = await record_screening_response(
+            mock_session,
+            uuid.uuid4(),
+            "trial-1",
+            "insulin_dependent",
+            "no",
+            Provenance.PATIENT_STATED,
+        )
+        assert result["recorded"] is True
+        assert pt.eligibility_status == EligibilityStatus.PENDING
+        assert pt.screening_responses["insulin_dependent"]["answer"] == "no"
+        assert len(pt.screening_responses["insulin_dependent_history"]) == 1
+
 
 class TestDetermineEligibility:
     """Eligibility determination with real nested response format."""
