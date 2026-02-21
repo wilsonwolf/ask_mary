@@ -13,6 +13,7 @@ the integration point between ElevenLabs server tools and our agent logic.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -77,13 +78,11 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 GATED_TOOLS: frozenset[str] = frozenset({
     "verify_identity",
     "detect_duplicate",
-    "get_screening_criteria",
     "check_hard_excludes",
     "determine_eligibility",
     "record_screening_response",
     "record_screening_answer",
     "check_eligibility",
-    "check_availability",
     "book_appointment",
     "book_transport",
     "check_geo_eligibility",
@@ -682,11 +681,13 @@ async def _handle_book_appointment(
         )
         appointment_id_str = result.get("appointment_id")
         if appointment_id_str:
-            await _schedule_comms_cadence(
-                session,
-                participant_id,
-                uuid.UUID(appointment_id_str),
-                slot_dt,
+            asyncio.create_task(
+                _schedule_comms_cadence(
+                    session,
+                    participant_id,
+                    uuid.UUID(appointment_id_str),
+                    slot_dt,
+                )
             )
     return result
 
@@ -835,19 +836,19 @@ async def _handle_safety_check(
         "trigger_type": result.trigger_type,
         "severity": result.severity,
     }
-    await _log_agent_reasoning(
-        session,
-        params.get("_conversation_id"),
-        participant_id,
-        "safety_gate",
-        {
-            "decision": "safety_check",
-            "triggered": result.triggered,
-            "trigger_type": result.trigger_type,
-            "severity": result.severity,
-        },
-    )
     if result.triggered:
+        await _log_agent_reasoning(
+            session,
+            params.get("_conversation_id"),
+            participant_id,
+            "safety_gate",
+            {
+                "decision": "safety_check",
+                "triggered": result.triggered,
+                "trigger_type": result.trigger_type,
+                "severity": result.severity,
+            },
+        )
         await _log_and_broadcast(
             session,
             participant_id,
