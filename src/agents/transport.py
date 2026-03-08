@@ -10,21 +10,27 @@ The @function_tool wrappers are JSON-serializable SDK stubs that will be
 wired to the helpers at runtime by the orchestrator.
 """
 
+import logging
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # agents is the OpenAI Agents SDK package (openai-agents), NOT src/agents/
 from agents import Agent, function_tool
 from src.db.postgres import create_ride, get_appointment, get_participant_by_id, get_ride
+from src.services.cloud_tasks_client import enqueue_reminder
+from src.shared.response_models import AddressConfirmResult, TransportBookingResult
+from src.shared.types import Channel
+
+logger = logging.getLogger(__name__)
 
 
 async def confirm_pickup_address(
     session: AsyncSession,
     participant_id: uuid.UUID,
     proposed_address: str,
-) -> dict:
+) -> AddressConfirmResult:
     """Confirm pickup address against participant record.
 
     Args:
@@ -33,22 +39,82 @@ async def confirm_pickup_address(
         proposed_address: Address proposed for pickup.
 
     Returns:
-        Dict with confirmation status and address details.
+        AddressConfirmResult with confirmation and match status.
     """
     participant = await get_participant_by_id(session, participant_id)
     on_file = (
         f"{participant.address_street}, {participant.address_city},"
         f" {participant.address_state} {participant.address_zip}"
     )
-    is_match = (
-        proposed_address.lower() in on_file.lower() or on_file.lower() in proposed_address.lower()
+    is_match = proposed_address.lower().strip() == on_file.lower().strip()
+    return AddressConfirmResult(
+        confirmed=True,
+        is_match=is_match,
+        address_on_file=on_file,
+        stated_address=proposed_address,
     )
-    return {
-        "confirmed": True,
-        "address_on_file": on_file,
-        "proposed": proposed_address,
-        "is_match": is_match,
-    }
+
+
+_RECONFIRM_OFFSETS: list[tuple[str, timedelta]] = [
+    ("transport_reconfirm_24h", timedelta(hours=24)),
+    ("transport_reconfirm_2h", timedelta(hours=2)),
+]
+
+
+async def _schedule_ride_reconfirmation(
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    ride_id: uuid.UUID,
+    pickup_at: datetime,
+) -> None:
+    """Schedule T-24h and T-2h reconfirmation tasks for a ride.
+
+    Args:
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        ride_id: Ride UUID.
+        pickup_at: Scheduled pickup datetime (UTC).
+    """
+    now = datetime.now(UTC)
+    for template_id, offset in _RECONFIRM_OFFSETS:
+        send_at = pickup_at - offset
+        if send_at <= now:
+            continue
+        await _enqueue_reconfirm_task(
+            participant_id, appointment_id,
+            ride_id, template_id, send_at,
+        )
+
+
+async def _enqueue_reconfirm_task(
+    participant_id: uuid.UUID,
+    appointment_id: uuid.UUID,
+    ride_id: uuid.UUID,
+    template_id: str,
+    send_at: datetime,
+) -> None:
+    """Enqueue a single reconfirmation task, swallowing errors.
+
+    Args:
+        participant_id: Participant UUID.
+        appointment_id: Appointment UUID.
+        ride_id: Ride UUID.
+        template_id: Reconfirm template identifier.
+        send_at: Scheduled send datetime.
+    """
+    prefix = template_id.replace("transport_reconfirm_", "")
+    key = f"transport-reconfirm-{prefix}-{ride_id}"
+    try:
+        await enqueue_reminder(
+            participant_id=participant_id,
+            appointment_id=appointment_id,
+            template_id=template_id,
+            channel=Channel.SMS,
+            send_at=send_at,
+            idempotency_key=key,
+        )
+    except Exception:
+        logger.debug("reconfirm_enqueue_failed", extra={"key": key})
 
 
 async def book_transport(
@@ -56,7 +122,7 @@ async def book_transport(
     participant_id: uuid.UUID,
     appointment_id: uuid.UUID,
     pickup_address: str,
-) -> dict:
+) -> TransportBookingResult:
     """Book transport for an appointment.
 
     Args:
@@ -66,11 +132,11 @@ async def book_transport(
         pickup_address: Pickup address string.
 
     Returns:
-        Dict confirming ride booking.
+        TransportBookingResult confirming ride booking.
     """
     appointment = await get_appointment(session, appointment_id)
     if appointment is None:
-        return {"error": "appointment_not_found"}
+        return TransportBookingResult(booked=False, error="appointment_not_found")
     pickup_time = appointment.scheduled_at - timedelta(hours=1)
 
     dropoff = appointment.site_address or ""
@@ -82,19 +148,22 @@ async def book_transport(
         dropoff_address=dropoff,
         scheduled_pickup_at=pickup_time,
     )
-    return {
-        "booked": True,
-        "ride_id": str(ride.ride_id),
-        "pickup_address": pickup_address,
-        "dropoff_address": dropoff,
-        "scheduled_pickup_at": pickup_time.isoformat(),
-    }
+    await _schedule_ride_reconfirmation(
+        participant_id, appointment_id, ride.ride_id, pickup_time,
+    )
+    return TransportBookingResult(
+        booked=True,
+        ride_id=str(ride.ride_id),
+        pickup_address=pickup_address,
+        dropoff_address=dropoff,
+        scheduled_pickup_at=pickup_time.isoformat(),
+    )
 
 
 async def check_ride_status(
     session: AsyncSession,
     ride_id: uuid.UUID,
-) -> dict:
+) -> TransportBookingResult:
     """Check the current status of a ride.
 
     Args:
@@ -102,15 +171,15 @@ async def check_ride_status(
         ride_id: Ride UUID.
 
     Returns:
-        Dict with ride status.
+        TransportBookingResult with ride status.
     """
     ride = await get_ride(session, ride_id)
     if ride is None:
-        return {"error": "ride_not_found"}
-    return {
-        "status": ride.status,
-        "uber_ride_id": ride.uber_ride_id,
-    }
+        return TransportBookingResult(booked=False, error="ride_not_found")
+    return TransportBookingResult(
+        booked=True,
+        ride_id=str(ride_id),
+    )
 
 
 # --- Agent SDK function tools (JSON-serializable params only) ---

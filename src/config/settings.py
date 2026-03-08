@@ -68,7 +68,11 @@ class Settings(BaseSettings):
     public_base_url: str = ""
 
     # Dashboard / CORS
-    cors_allowed_origins: list[str] = ["http://localhost:5173", "http://localhost:3000"]
+    cors_allowed_origins: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "https://ask-mary-1030626458480.us-west2.run.app",
+    ]
     demo_participant_phone: str = ""
     demo_trial_id: str = "diabetes-study-a"
 

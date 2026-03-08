@@ -22,6 +22,10 @@ const INITIAL_STATE: DemoState = {
 }
 
 function applyEvent(state: DemoState, event: EventData): DemoState {
+  // Deduplicate by event_id (replay + live can overlap)
+  if (state.events.some(e => e.event_id === event.event_id)) {
+    return state
+  }
   const base = { ...state, events: [...state.events, event] }
   switch (event.event_type) {
     case 'outbound_call_initiated':
@@ -48,7 +52,9 @@ function applyEvent(state: DemoState, event: EventData): DemoState {
     case 'screening_completed':
       return {
         ...base,
-        eligibilityStatus: (event.payload?.status as string) || 'unknown',
+        eligibilityStatus: event.payload?.eligible === true ? 'eligible'
+          : event.payload?.eligible === false ? 'ineligible'
+          : 'unknown',
         trialName: (event.payload?.trial_name as string) || base.trialName || event.trial_id || '',
       }
     case 'availability_checked':

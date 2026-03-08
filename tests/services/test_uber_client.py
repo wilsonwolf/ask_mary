@@ -5,6 +5,7 @@ from src.services.uber_client import (
     RideBookingResult,
     RideEstimate,
 )
+from src.shared.types import RideStatus
 
 
 class TestRideEstimate:
@@ -43,4 +44,4 @@ class TestMockUberHealthClient:
         )
         assert isinstance(result, RideBookingResult)
         assert result.uber_ride_id.startswith("mock-ride-")
-        assert result.status == "confirmed"
+        assert result.status == RideStatus.CONFIRMED

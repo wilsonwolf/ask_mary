@@ -18,6 +18,19 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from src.shared.types import (
+    AppointmentStatus,
+    ContactabilityRisk,
+    ConversationStatus,
+    EligibilityStatus,
+    EnrollmentStatus,
+    HandoffPriority,
+    HandoffStatus,
+    IdentityStatus,
+    PipelineStatus,
+    RideStatus,
+)
+
 
 class Base(DeclarativeBase):
     """Base class for all ORM models."""
@@ -54,12 +67,12 @@ class Participant(Base):
     preferred_channel: Mapped[str | None] = mapped_column(String(20))
     best_time_to_reach: Mapped[str | None] = mapped_column(String(50))
     language: Mapped[str | None] = mapped_column(String(10), default="en")
-    identity_status: Mapped[str] = mapped_column(String(20), default="unverified")
+    identity_status: Mapped[str] = mapped_column(String(20), default=IdentityStatus.UNVERIFIED)
     dnc_flags: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     contactability: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     consent: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     caregiver: Mapped[dict | None] = mapped_column(JSONB)
-    contactability_risk: Mapped[str] = mapped_column(String(10), default="none")
+    contactability_risk: Mapped[str] = mapped_column(String(10), default=ContactabilityRisk.NONE)
     outreach_attempt_count: Mapped[int] = mapped_column(Integer, default=0)
     next_action_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     next_action_type: Mapped[str | None] = mapped_column(String(30))
@@ -99,9 +112,9 @@ class ParticipantTrial(Base):
         ForeignKey("trials.trial_id"),
         index=True,
     )
-    pipeline_status: Mapped[str] = mapped_column(String(20), default="new")
-    enrollment_status: Mapped[str] = mapped_column(String(20), default="screening")
-    eligibility_status: Mapped[str] = mapped_column(String(20), default="pending")
+    pipeline_status: Mapped[str] = mapped_column(String(20), default=PipelineStatus.NEW)
+    enrollment_status: Mapped[str] = mapped_column(String(20), default=EnrollmentStatus.SCREENING)
+    eligibility_status: Mapped[str] = mapped_column(String(20), default=EligibilityStatus.PENDING)
     eligibility_confidence: Mapped[float | None] = mapped_column(Float)
     screening_responses: Mapped[dict | None] = mapped_column(JSONB, default=dict)
     ehr_discrepancies: Mapped[dict | None] = mapped_column(JSONB)
@@ -141,7 +154,7 @@ class Appointment(Base):
     visit_type: Mapped[str] = mapped_column(String(20))
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     google_event_id: Mapped[str | None] = mapped_column(String(200), unique=True)
-    status: Mapped[str] = mapped_column(String(30), default="booked")
+    status: Mapped[str] = mapped_column(String(30), default=AppointmentStatus.BOOKED)
     site_address: Mapped[str | None] = mapped_column(String(300))
     site_name: Mapped[str | None] = mapped_column(String(200))
     prep_instructions: Mapped[str | None] = mapped_column(Text)
@@ -191,7 +204,7 @@ class Conversation(Base):
     twilio_call_sid: Mapped[str | None] = mapped_column(String(100))
     audio_gcs_path: Mapped[str | None] = mapped_column(String(500))
     duration_seconds: Mapped[float | None] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(20), default="active")
+    status: Mapped[str] = mapped_column(String(20), default=ConversationStatus.ACTIVE)
     full_transcript: Mapped[dict | None] = mapped_column(JSONB)
     summary: Mapped[dict | None] = mapped_column(JSONB)
     handoff_reason: Mapped[str | None] = mapped_column(String(100))
@@ -269,8 +282,8 @@ class HandoffQueue(Base):
     )
     reason: Mapped[str] = mapped_column(String(50))
     severity: Mapped[str] = mapped_column(String(20))
-    priority: Mapped[str] = mapped_column(String(10), default="medium")
-    status: Mapped[str] = mapped_column(String(20), default="open")
+    priority: Mapped[str] = mapped_column(String(10), default=HandoffPriority.MEDIUM)
+    status: Mapped[str] = mapped_column(String(20), default=HandoffStatus.OPEN)
     summary: Mapped[str | None] = mapped_column(Text)
     recommended_next_action: Mapped[str | None] = mapped_column(String(200))
     coordinator_phone: Mapped[str | None] = mapped_column(String(20))
@@ -309,7 +322,7 @@ class Ride(Base):
     dropoff_address: Mapped[str] = mapped_column(String(300))
     scheduled_pickup_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     uber_ride_id: Mapped[str | None] = mapped_column(String(100))
-    status: Mapped[str] = mapped_column(String(20), default="pending")
+    status: Mapped[str] = mapped_column(String(20), default=RideStatus.PENDING)
     failure_reason: Mapped[str | None] = mapped_column(String(200))
     return_trip: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

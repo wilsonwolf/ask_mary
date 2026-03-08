@@ -31,7 +31,7 @@ class TestAuditTranscript:
     """Transcript compliance audit."""
 
     async def test_audit_compliant_transcript(self) -> None:
-        """Transcript with all required steps returns risk_level=LOW."""
+        """Transcript with all required steps returns compliant=True."""
         mock_session = AsyncMock()
         conversation = MagicMock()
         conversation.full_transcript = {
@@ -51,11 +51,10 @@ class TestAuditTranscript:
 
         result = await audit_transcript(mock_session, uuid.uuid4())
         assert result["compliant"] is True
-        assert result["risk_level"] == "LOW"
-        assert result["missing_steps"] == []
+        assert result["violations"] == []
 
     async def test_audit_missing_disclosure(self) -> None:
-        """Transcript missing disclosure returns risk_level=HIGH."""
+        """Transcript missing disclosure returns compliant=False with violation."""
         mock_session = AsyncMock()
         conversation = MagicMock()
         conversation.full_transcript = {
@@ -74,8 +73,7 @@ class TestAuditTranscript:
 
         result = await audit_transcript(mock_session, uuid.uuid4())
         assert result["compliant"] is False
-        assert result["risk_level"] == "HIGH"
-        assert "disclosure" in result["missing_steps"]
+        assert any("disclosure" in v for v in result["violations"])
 
     async def test_audit_handles_entries_without_step_key(self) -> None:
         """Entries missing step key are skipped, not KeyError."""
@@ -107,7 +105,7 @@ class TestAuditTranscript:
 
         result = await audit_transcript(mock_session, uuid.uuid4())
         assert result["compliant"] is False
-        assert len(result["missing_steps"]) == 3
+        assert len(result["violations"]) == 3
 
 
 class TestCheckPhiLeak:
@@ -137,11 +135,11 @@ class TestCheckPhiLeak:
         mock_session.execute.return_value = result_mock
 
         result = await check_phi_leak(mock_session, uuid.uuid4())
-        assert result["phi_leaked"] is True
-        assert len(result["details"]) > 0
+        assert result["phi_detected"] is True
+        assert len(result["violations"]) > 0
 
     async def test_no_phi_leak_in_compliant_call(self) -> None:
-        """PHI only after identity_verified step returns phi_leaked=False."""
+        """PHI only after identity_verified step returns phi_detected=False."""
         mock_session = AsyncMock()
         conversation = MagicMock()
         conversation.full_transcript = {
@@ -161,8 +159,8 @@ class TestCheckPhiLeak:
         mock_session.execute.return_value = result_mock
 
         result = await check_phi_leak(mock_session, uuid.uuid4())
-        assert result["phi_leaked"] is False
-        assert result["details"] == []
+        assert result["phi_detected"] is False
+        assert result["violations"] == []
 
     async def test_phi_leak_handles_entries_without_step(self) -> None:
         """Entries missing step key don't crash PHI scan."""
@@ -179,8 +177,8 @@ class TestCheckPhiLeak:
         mock_session.execute.return_value = result_mock
 
         result = await check_phi_leak(mock_session, uuid.uuid4())
-        assert result["phi_leaked"] is True
-        assert len(result["details"]) > 0
+        assert result["phi_detected"] is True
+        assert len(result["violations"]) > 0
 
 
 class TestDetectAnswerInconsistencies:
@@ -205,8 +203,8 @@ class TestDetectAnswerInconsistencies:
             uuid.uuid4(),
             "trial-1",
         )
-        assert result["inconsistencies_found"] is True
-        assert "diagnosis" in result["flagged_questions"]
+        assert result["deception_detected"] is True
+        assert any("diagnosis" in d["field"] for d in result["discrepancies"])
 
     async def test_consistent_answers_clean(self) -> None:
         """All answers consistent across sources returns clean."""
@@ -227,8 +225,8 @@ class TestDetectAnswerInconsistencies:
             uuid.uuid4(),
             "trial-1",
         )
-        assert result["inconsistencies_found"] is False
-        assert result["flagged_questions"] == []
+        assert result["deception_detected"] is False
+        assert result["discrepancies"] == []
 
 
 class TestAuditProvenance:
@@ -251,8 +249,8 @@ class TestAuditProvenance:
             uuid.uuid4(),
             "trial-1",
         )
-        assert result["all_valid"] is True
-        assert result["missing_provenance"] == []
+        assert result["compliant"] is True
+        assert result["violations"] == []
 
     async def test_missing_provenance_flagged(self) -> None:
         """Response without provenance field is flagged."""
@@ -271,5 +269,5 @@ class TestAuditProvenance:
             uuid.uuid4(),
             "trial-1",
         )
-        assert result["all_valid"] is False
-        assert "medication" in result["missing_provenance"]
+        assert result["compliant"] is False
+        assert any("medication" in v for v in result["violations"])

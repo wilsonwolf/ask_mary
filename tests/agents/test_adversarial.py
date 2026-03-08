@@ -1,7 +1,8 @@
 """Tests for the adversarial checker agent helper functions and tools.
 
-Tests deception detection, recheck scheduling, and adversarial rescreen
-with mocked database sessions and external service clients.
+Tests deception detection, recheck scheduling, adversarial rescreen,
+and verification prompt generation with mocked database sessions
+and external service clients.
 """
 
 import uuid
@@ -9,11 +10,14 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.adversarial import (
+    PROMPT_TEMPLATES,
     adversarial_agent,
     detect_deception,
+    generate_verification_prompts,
     run_adversarial_rescreen,
     schedule_recheck,
 )
+from src.shared.types import AdversarialCheckStatus, Channel, Provenance
 
 
 class TestDetectDeception:
@@ -121,7 +125,7 @@ class TestScheduleRecheck:
         call_kwargs = mock_enqueue.call_args.kwargs
         assert call_kwargs["participant_id"] == participant_id
         assert call_kwargs["template_id"] == "adversarial_recheck"
-        assert call_kwargs["channel"] == "system"
+        assert call_kwargs["channel"] == Channel.SYSTEM
         assert call_kwargs["idempotency_key"] == f"recheck-{participant_id}-{trial_id}"
 
 
@@ -155,10 +159,119 @@ class TestRunAdversarialRescreen:
             )
 
         assert participant_trial.adversarial_recheck_done is True
-        assert participant_trial.adversarial_results["provenance"] == "system"
+        assert participant_trial.adversarial_results["provenance"] == Provenance.SYSTEM
         assert "rescreened_at" in participant_trial.adversarial_results
-        assert result["rescreened"] is True
-        assert result["results"] == participant_trial.adversarial_results
+        assert result["deception_detected"] is False
+        assert result["recheck_scheduled"] is False
+
+
+class TestGenerateVerificationPrompts:
+    """Verification prompt generation from detected discrepancies."""
+
+    async def test_generate_verification_prompts_with_discrepancies(
+        self,
+    ) -> None:
+        """Generates prompts for each discrepancy found by detect_deception."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+        trial_id = "trial-42"
+        mock_pt = MagicMock()
+        mock_pt.adversarial_results = None
+
+        fake_deception = MagicMock()
+        fake_deception.discrepancies = [
+            {"field": "dob", "stated": "1990", "ehr": "1985"},
+            {"field": "zip", "stated": "97201", "ehr": "97202"},
+        ]
+
+        with (
+            patch(
+                "src.agents.adversarial.detect_deception",
+                new_callable=AsyncMock,
+                return_value=fake_deception,
+            ),
+            patch(
+                "src.agents.adversarial.get_participant_trial",
+                new_callable=AsyncMock,
+                return_value=mock_pt,
+            ),
+        ):
+            result = await generate_verification_prompts(
+                mock_session, participant_id, trial_id,
+            )
+
+        assert result.check_status == AdversarialCheckStatus.COMPLETE
+        assert len(result.prompts) == 2
+        assert result.prompts[0] == PROMPT_TEMPLATES["dob"]
+        assert result.prompts[1] == PROMPT_TEMPLATES["zip"]
+        assert len(result.discrepancies) == 2
+        assert mock_pt.adversarial_results is not None
+        assert mock_pt.adversarial_results["check_status"] == "complete"
+
+    async def test_generate_verification_prompts_no_discrepancies(
+        self,
+    ) -> None:
+        """Returns empty prompts when detect_deception finds no issues."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+        trial_id = "trial-42"
+        mock_pt = MagicMock()
+        mock_pt.adversarial_results = None
+
+        fake_deception = MagicMock()
+        fake_deception.discrepancies = []
+
+        with (
+            patch(
+                "src.agents.adversarial.detect_deception",
+                new_callable=AsyncMock,
+                return_value=fake_deception,
+            ),
+            patch(
+                "src.agents.adversarial.get_participant_trial",
+                new_callable=AsyncMock,
+                return_value=mock_pt,
+            ),
+        ):
+            result = await generate_verification_prompts(
+                mock_session, participant_id, trial_id,
+            )
+
+        assert result.check_status == AdversarialCheckStatus.COMPLETE
+        assert result.prompts == []
+        assert result.discrepancies == []
+
+    async def test_prompt_template_default_fallback(self) -> None:
+        """Unknown field gets a default prompt template."""
+        mock_session = AsyncMock()
+        participant_id = uuid.uuid4()
+        trial_id = "trial-42"
+        mock_pt = MagicMock()
+        mock_pt.adversarial_results = None
+
+        fake_deception = MagicMock()
+        fake_deception.discrepancies = [
+            {"field": "blood_type", "stated": "A+", "ehr": "O-"},
+        ]
+
+        with (
+            patch(
+                "src.agents.adversarial.detect_deception",
+                new_callable=AsyncMock,
+                return_value=fake_deception,
+            ),
+            patch(
+                "src.agents.adversarial.get_participant_trial",
+                new_callable=AsyncMock,
+                return_value=mock_pt,
+            ),
+        ):
+            result = await generate_verification_prompts(
+                mock_session, participant_id, trial_id,
+            )
+
+        assert len(result.prompts) == 1
+        assert result.prompts[0] == "Could you confirm your blood_type for me?"
 
 
 class TestAdversarialAgentDefinition:

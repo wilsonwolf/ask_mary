@@ -210,6 +210,20 @@ class TestBuildSystemPrompt:
         assert "eligible=false" in result
         assert "Do NOT second-guess the tool result" in result
 
+    def test_system_prompt_includes_reactive_safety_check(self) -> None:
+        """System prompt instructs safety_check only on concerning input."""
+        result = build_system_prompt(
+            trial_name="Study",
+            site_name="Site",
+            coordinator_phone="+10000000000",
+            inclusion_criteria={},
+            exclusion_criteria={},
+            visit_templates={},
+        )
+        assert "safety_check" in result
+        assert "medically concerning" in result
+        assert "Do NOT call on routine conversation" in result
+
     def test_handles_empty_criteria(self) -> None:
         """System prompt handles empty criteria gracefully."""
         result = build_system_prompt(

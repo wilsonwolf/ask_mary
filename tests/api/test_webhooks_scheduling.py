@@ -127,6 +127,10 @@ class TestBookAppointmentHandler:
                 new_callable=AsyncMock,
                 return_value=None,
             ),
+            patch(
+                "src.api.webhooks._update_pipeline_status",
+                new_callable=AsyncMock,
+            ),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -180,6 +184,10 @@ class TestBookAppointmentHandler:
                 "src.api.webhooks.broadcast_event",
                 new_callable=AsyncMock,
             ) as mock_broadcast,
+            patch(
+                "src.api.webhooks._update_pipeline_status",
+                new_callable=AsyncMock,
+            ),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -268,6 +276,14 @@ class TestToolAliases:
                 "src.db.trials.get_trial",
                 new_callable=AsyncMock,
                 return_value=mock_trial,
+            ),
+            patch(
+                "src.api.webhooks._update_pipeline_status",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "src.api.webhooks._log_agent_reasoning",
+                new_callable=AsyncMock,
             ),
         ):
             transport = ASGITransport(app=app)

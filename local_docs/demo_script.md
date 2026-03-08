@@ -93,16 +93,16 @@ You press **1**.
 **Mary:**
 > "Thanks. To confirm I'm speaking with the right person, please enter your birth year as four digits."
 
-You press **1980**.
+You press **1972**.
 
 **Mary:**
 > "Thank you. Now enter your ZIP code."
 
-You press **97201**.
+You press **97205**.
 
 **Dashboard updates:**
 - `verified_identity = true`
-- Participant card fills in: DOB year: 1980, ZIP: 97201, timezone: America/Los_Angeles
+- Participant card fills in: DOB year: 1972, ZIP: 97205, timezone: America/Los_Angeles
 - Events feed: `IDENTITY_YEAR_COLLECTED`, `ZIP_COLLECTED`, `IDENTITY_VERIFIED`
 
 ---

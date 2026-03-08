@@ -1,0 +1,7 @@
+name: outreach_nudge
+channel: sms
+description: SMS nudge sent between outreach voice attempts.
+body: >
+  Hi {{ participant_name }}, this is Mary from {{ site_name }}.
+  We tried reaching you about a clinical research study.
+  Please call us back at your convenience, or reply STOP to opt out.

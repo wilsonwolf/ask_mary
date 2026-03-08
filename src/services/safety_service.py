@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.postgres import create_handoff, get_participant_trial
 from src.shared.safety_gate import SafetyResult, evaluate_safety
+from src.shared.types import HandoffSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ def build_safety_callback(
         handoff.handoff_packet = handoff_packet
 
         if (
-            result.severity == "HANDOFF_NOW"
+            result.severity == HandoffSeverity.HANDOFF_NOW
             and call_sid
             and coordinator_phone
         ):

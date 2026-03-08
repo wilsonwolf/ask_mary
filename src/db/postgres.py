@@ -15,6 +15,21 @@ from src.db.models import (
     Ride,
 )
 from src.shared.identity import generate_mary_id
+from src.shared.types import (
+    AppointmentStatus,
+    Channel,
+    ConversationStatus,
+    Direction,
+    EligibilityStatus,
+    EnrollmentStatus,
+    HandoffReason,
+    HandoffSeverity,
+    HandoffStatus,
+    IdentityStatus,
+    PipelineStatus,
+    RideStatus,
+    VisitType,
+)
 
 
 async def create_participant(
@@ -53,7 +68,7 @@ async def create_participant(
         date_of_birth=date_of_birth,
         phone=phone,
         language=language,
-        identity_status="unverified",
+        identity_status=IdentityStatus.UNVERIFIED,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
@@ -118,9 +133,9 @@ async def enroll_in_trial(
         participant_trial_id=uuid.uuid4(),
         participant_id=participant_id,
         trial_id=trial_id,
-        pipeline_status="new",
-        enrollment_status="screening",
-        eligibility_status="pending",
+        pipeline_status=PipelineStatus.NEW,
+        enrollment_status=EnrollmentStatus.SCREENING,
+        eligibility_status=EligibilityStatus.PENDING,
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
     )
@@ -134,7 +149,7 @@ async def create_appointment(
     *,
     participant_id: uuid.UUID,
     trial_id: str,
-    visit_type: str,
+    visit_type: VisitType,
     scheduled_at: datetime,
     site_name: str | None = None,
     site_address: str | None = None,
@@ -165,7 +180,7 @@ async def create_appointment(
         site_name=site_name,
         site_address=site_address,
         estimated_duration_min=estimated_duration_min,
-        status="booked",
+        status=AppointmentStatus.BOOKED,
         created_at=now,
         updated_at=now,
     )
@@ -178,8 +193,8 @@ async def create_handoff(
     session: AsyncSession,
     *,
     participant_id: uuid.UUID,
-    reason: str,
-    severity: str,
+    reason: HandoffReason,
+    severity: HandoffSeverity,
     summary: str | None = None,
     conversation_id: uuid.UUID | None = None,
     trial_id: str | None = None,
@@ -211,7 +226,7 @@ async def create_handoff(
         trial_id=trial_id,
         reason=reason,
         severity=severity,
-        status="open",
+        status=HandoffStatus.OPEN,
         summary=summary,
         coordinator_phone=coordinator_phone,
         callback_number=callback_number,
@@ -253,7 +268,7 @@ async def create_ride(
         pickup_address=pickup_address,
         dropoff_address=dropoff_address,
         scheduled_pickup_at=scheduled_pickup_at,
-        status="pending",
+        status=RideStatus.PENDING,
         created_at=now,
         updated_at=now,
     )
@@ -330,8 +345,8 @@ async def create_conversation(
     session: AsyncSession,
     *,
     participant_id: uuid.UUID,
-    channel: str,
-    direction: str,
+    channel: Channel,
+    direction: Direction,
     agent_name: str | None = None,
     trial_id: str | None = None,
 ) -> Conversation:
@@ -355,7 +370,7 @@ async def create_conversation(
         direction=direction,
         agent_name=agent_name,
         trial_id=trial_id,
-        status="active",
+        status=ConversationStatus.ACTIVE,
         started_at=datetime.now(UTC),
     )
     session.add(conversation)

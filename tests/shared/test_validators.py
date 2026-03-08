@@ -1,5 +1,6 @@
 """Tests for shared input validators."""
 
+from src.shared.types import Channel
 from src.shared.validators import (
     is_dnc_blocked,
     validate_channel,
@@ -97,7 +98,7 @@ class TestValidateChannel:
 
     def test_valid_channels(self) -> None:
         """All defined channels pass."""
-        for ch in ("voice", "sms", "whatsapp"):
+        for ch in (Channel.VOICE, Channel.SMS, Channel.WHATSAPP):
             assert validate_channel(ch) is True
 
     def test_rejects_unknown(self) -> None:

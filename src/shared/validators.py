@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     import uuid
 
-from src.shared.types import Channel
+from src.shared.types import Channel, IdentityStatus
 
 _VALID_CHANNELS = {ch.value for ch in Channel if ch != Channel.SYSTEM}
 
@@ -122,7 +122,7 @@ async def check_identity_gate(
         Dict with 'passed' boolean.
     """
     participant = await get_participant_by_id(session, participant_id)
-    is_verified = participant.identity_status == "verified"
+    is_verified = participant.identity_status == IdentityStatus.VERIFIED
     return {"passed": is_verified}
 
 
@@ -147,3 +147,40 @@ async def check_disclosure_gate(
     is_disclosed = consent.get("disclosed_automation") is True
     has_consent = consent.get("consent_to_continue") is True
     return {"passed": is_disclosed and has_consent}
+
+
+async def _enforce_pre_checks(
+    session: Any,
+    participant_id: uuid.UUID,
+    channel: str,
+) -> dict | None:
+    """Run DNC, disclosure, and consent gates before a tool handler.
+
+    Checks are executed in fail-fast order: DNC first (cheapest),
+    then disclosure/consent (single DB read shared between them).
+
+    Args:
+        session: Database session object.
+        participant_id: Participant UUID.
+        channel: Communication channel for DNC lookup.
+
+    Returns:
+        Error dict with 'error' key if a gate fails, None if all pass.
+    """
+    participant = await get_participant_by_id(session, participant_id)
+    if participant is None:
+        return {"error": "participant_not_found"}
+
+    if is_dnc_blocked(participant.dnc_flags, channel):
+        return {"error": "dnc_blocked", "channel": channel}
+
+    consent = participant.consent or {}
+    is_disclosed = consent.get("disclosed_automation") is True
+    if not is_disclosed:
+        return {"error": "disclosure_not_given"}
+
+    has_consent = consent.get("consent_to_continue") is True
+    if not has_consent:
+        return {"error": "consent_not_given"}
+
+    return None

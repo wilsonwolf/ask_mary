@@ -1,9 +1,12 @@
-import { useCallback } from 'react'
+import { useCallback, useState } from 'react'
+import { AnalyticsSummary } from './components/AnalyticsSummary'
 import { CallPanel } from './components/CallPanel'
 import { CoordinatorConfig } from './components/CoordinatorConfig'
 import { DemoButton } from './components/DemoButton'
 import { EligibilityPanel } from './components/EligibilityPanel'
 import { EventsFeed } from './components/EventsFeed'
+import { HandoffManagement } from './components/HandoffManagement'
+import { ParticipantDetail } from './components/ParticipantDetail'
 import { SchedulingPanel } from './components/SchedulingPanel'
 import { TransportPanel } from './components/TransportPanel'
 import { useDemoState } from './hooks/useDemoState'
@@ -12,6 +15,7 @@ import type { WsMessage } from './types/events'
 
 export default function App() {
   const [state, dispatch] = useDemoState()
+  const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null)
 
   const handleWsMessage = useCallback(
     (msg: WsMessage) => {
@@ -44,6 +48,9 @@ export default function App() {
         </div>
       </div>
 
+      {/* Analytics Summary */}
+      <AnalyticsSummary />
+
       {/* 2x2 Panel Grid */}
       <div className="mb-6 grid grid-cols-1 gap-4 md:grid-cols-2">
         <CallPanel
@@ -72,8 +79,21 @@ export default function App() {
         />
       </div>
 
+      {/* Handoff Management */}
+      <div className="mb-6">
+        <HandoffManagement />
+      </div>
+
       {/* Events Feed */}
       <EventsFeed events={state.events} />
+
+      {/* Participant Detail Modal */}
+      {selectedParticipantId && (
+        <ParticipantDetail
+          participantId={selectedParticipantId}
+          onClose={() => setSelectedParticipantId(null)}
+        />
+      )}
     </div>
   )
 }

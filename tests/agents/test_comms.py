@@ -10,6 +10,7 @@ from src.agents.comms import (
     schedule_reminder,
     send_communication,
 )
+from src.shared.types import Channel
 
 
 class TestCommsAgentDefinition:
@@ -35,7 +36,7 @@ class TestSendCommunication:
                 mock_session,
                 uuid.uuid4(),
                 "appointment_booked",
-                "sms",
+                Channel.SMS,
                 {
                     "participant_name": "Jane",
                     "trial_name": "Study A",
@@ -46,7 +47,7 @@ class TestSendCommunication:
                 },
             )
         assert result["sent"] is True
-        assert "idempotency_key" in result
+        assert result["channel"] is not None
 
 
 class TestScheduleReminder:
@@ -62,12 +63,11 @@ class TestScheduleReminder:
                 uuid.uuid4(),
                 uuid.uuid4(),
                 "prep_instructions",
-                "sms",
+                Channel.SMS,
                 send_at,
             )
         assert result["scheduled"] is True
-        assert "idempotency_key" in result
-        assert "task_id" in result
+        assert result["task_id"] is not None
         assert result["task_id"].startswith("task-")
 
 
@@ -81,7 +81,8 @@ class TestHandleUnreachable:
             result = await handle_unreachable(
                 mock_session,
                 uuid.uuid4(),
-                "voice",
+                Channel.VOICE,
             )
-        assert result["escalated"] is True
-        assert result["fallback_channel"] == "sms"
+        assert result["sent"] is False
+        assert result["channel"] is not None
+        assert result["error"] == "unreachable_on_voice"

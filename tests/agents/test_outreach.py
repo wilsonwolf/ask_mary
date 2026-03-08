@@ -6,17 +6,22 @@ business logic; the @function_tool wrappers are the SDK integration layer.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.outreach import (
+    OUTREACH_CADENCE,
     assemble_call_context,
     capture_consent,
     check_dnc_before_contact,
     handle_stop_keyword,
     initiate_outbound_call,
     log_outreach_attempt,
+    mark_call_outcome,
     outreach_agent,
+    schedule_next_outreach,
 )
+from src.shared.types import Channel
 
 
 class TestOutreachAgentDefinition:
@@ -43,7 +48,7 @@ class TestCheckDncBeforeContact:
             "src.agents.outreach.get_participant_by_id",
             return_value=participant,
         ):
-            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), "voice")
+            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), Channel.VOICE)
         assert result["blocked"] is True
 
     async def test_not_blocked_when_clear(self) -> None:
@@ -55,7 +60,7 @@ class TestCheckDncBeforeContact:
             "src.agents.outreach.get_participant_by_id",
             return_value=participant,
         ):
-            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), "voice")
+            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), Channel.VOICE)
         assert result["blocked"] is False
 
     async def test_returns_blocked_when_participant_missing(self) -> None:
@@ -65,7 +70,7 @@ class TestCheckDncBeforeContact:
             "src.agents.outreach.get_participant_by_id",
             return_value=None,
         ):
-            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), "voice")
+            result = await check_dnc_before_contact(mock_session, uuid.uuid4(), Channel.VOICE)
         assert result["blocked"] is True
 
     async def test_blocked_by_twilio_opt_out(self) -> None:
@@ -91,7 +96,7 @@ class TestCheckDncBeforeContact:
             result = await check_dnc_before_contact(
                 mock_session,
                 uuid.uuid4(),
-                "sms",
+                Channel.SMS,
             )
         assert result["blocked"] is True
         assert result["reason"] == "twilio_opted_out"
@@ -119,7 +124,8 @@ class TestAssembleCallContext:
             patch("src.agents.outreach.get_participant_by_id", return_value=participant),
             patch("src.agents.outreach.get_trial", return_value=trial),
         ):
-            context = await assemble_call_context(mock_session, uuid.uuid4(), "trial-1")
+            result = await assemble_call_context(mock_session, uuid.uuid4(), "trial-1")
+        context = result["context"]
         assert context["participant_name"] == "Jane Doe"
         assert context["trial_name"] == "Diabetes Study A"
         assert context["participant_phone"] == "+15035559999"
@@ -189,7 +195,7 @@ class TestCaptureConsent:
             return_value=participant,
         ):
             result = await capture_consent(mock_session, uuid.uuid4(), True, True)
-        assert result["consent_captured"] is True
+        assert result["recorded"] is True
 
 
 class TestHandleStopKeyword:
@@ -204,7 +210,7 @@ class TestHandleStopKeyword:
             "src.agents.outreach.get_participant_by_id",
             return_value=participant,
         ):
-            result = await handle_stop_keyword(mock_session, uuid.uuid4(), "sms")
+            result = await handle_stop_keyword(mock_session, uuid.uuid4(), Channel.SMS)
         assert result["dnc_applied"] is True
 
 
@@ -219,8 +225,213 @@ class TestLogOutreachAttempt:
                 mock_session,
                 uuid.uuid4(),
                 "trial-123",
-                "voice",
+                Channel.VOICE,
                 "completed",
             )
-        assert result["logged"] is True
+        assert result["sent"] is True
         mock_log.assert_awaited_once()
+
+
+class TestScheduleNextOutreach:
+    """Outreach retry scheduling with cadence-based logic."""
+
+    async def test_first_retry_schedules_sms(self) -> None:
+        """First retry after failed voice schedules SMS in 1 hour."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-abc"
+        participant_id = uuid.uuid4()
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            before = datetime.now(UTC)
+            result = await schedule_next_outreach(
+                mock_session, participant_id, "trial-1", 0,
+            )
+            after = datetime.now(UTC)
+
+        assert result is not None
+        assert result.scheduled is True
+        assert result.task_id == "task-abc"
+        call_kwargs = mock_enqueue.call_args.kwargs
+        assert call_kwargs["channel"] == "sms"
+        scheduled_at = call_kwargs["send_at"]
+        assert before + timedelta(hours=1) <= scheduled_at
+        assert scheduled_at <= after + timedelta(hours=1)
+
+    async def test_second_retry_schedules_voice(self) -> None:
+        """Second retry schedules voice call 24 hours later."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-def"
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            result = await schedule_next_outreach(
+                mock_session, uuid.uuid4(), "trial-1", 1,
+            )
+
+        assert result is not None
+        assert result.scheduled is True
+        call_kwargs = mock_enqueue.call_args.kwargs
+        assert call_kwargs["channel"] == "voice"
+
+    async def test_third_retry_schedules_voice_48h(self) -> None:
+        """Third retry schedules voice call 48 hours later."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-ghi"
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            result = await schedule_next_outreach(
+                mock_session, uuid.uuid4(), "trial-1", 2,
+            )
+
+        assert result is not None
+        call_kwargs = mock_enqueue.call_args.kwargs
+        assert call_kwargs["channel"] == "voice"
+
+    async def test_fourth_retry_schedules_final_sms(self) -> None:
+        """Fourth retry schedules final SMS 49 hours later."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-jkl"
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            result = await schedule_next_outreach(
+                mock_session, uuid.uuid4(), "trial-1", 3,
+            )
+
+        assert result is not None
+        call_kwargs = mock_enqueue.call_args.kwargs
+        assert call_kwargs["channel"] == "sms"
+
+    async def test_exceeds_max_attempts_returns_none(self) -> None:
+        """Returns None when current_attempt exceeds cadence length."""
+        mock_session = AsyncMock()
+        result = await schedule_next_outreach(
+            mock_session,
+            uuid.uuid4(),
+            "trial-1",
+            len(OUTREACH_CADENCE),
+        )
+        assert result is None
+
+    async def test_idempotency_key_includes_attempt(self) -> None:
+        """Idempotency key contains participant_id and attempt number."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-xyz"
+        participant_id = uuid.uuid4()
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            await schedule_next_outreach(
+                mock_session, participant_id, "trial-1", 0,
+            )
+
+        call_kwargs = mock_enqueue.call_args.kwargs
+        expected_key = f"outreach-retry-{participant_id}-0"
+        assert call_kwargs["idempotency_key"] == expected_key
+
+    async def test_uses_sentinel_appointment_id(self) -> None:
+        """Uses UUID(int=0) sentinel for appointment_id."""
+        mock_session = AsyncMock()
+        mock_task = MagicMock()
+        mock_task.task_id = "task-sentinel"
+
+        with patch(
+            "src.services.cloud_tasks_client.enqueue_reminder",
+            new_callable=AsyncMock,
+            return_value=mock_task,
+        ) as mock_enqueue:
+            await schedule_next_outreach(
+                mock_session, uuid.uuid4(), "trial-1", 0,
+            )
+
+        call_kwargs = mock_enqueue.call_args.kwargs
+        assert call_kwargs["appointment_id"] == uuid.UUID(int=0)
+
+
+class TestMarkCallOutcome:
+    """Call outcome recording and retry determination."""
+
+    async def test_mark_call_outcome_completed(self) -> None:
+        """Records completed outcome, should_retry=False."""
+        mock_session = AsyncMock()
+        participant = MagicMock()
+        participant.outreach_attempt_count = 0
+
+        with (
+            patch(
+                "src.agents.outreach.get_participant_by_id",
+                return_value=participant,
+            ),
+            patch("src.agents.outreach.log_event", return_value=MagicMock()),
+        ):
+            result = await mark_call_outcome(
+                mock_session, uuid.uuid4(), "trial-1", "completed",
+            )
+        assert result["recorded"] is True
+        assert result["outcome"] == "completed"
+        assert result["should_retry"] is False
+        assert result["next_attempt"] is None
+
+    async def test_mark_call_outcome_no_answer_triggers_retry(self) -> None:
+        """Records no_answer outcome, should_retry=True."""
+        mock_session = AsyncMock()
+        participant = MagicMock()
+        participant.outreach_attempt_count = 1
+
+        with (
+            patch(
+                "src.agents.outreach.get_participant_by_id",
+                return_value=participant,
+            ),
+            patch("src.agents.outreach.log_event", return_value=MagicMock()),
+        ):
+            result = await mark_call_outcome(
+                mock_session, uuid.uuid4(), "trial-1", "no_answer",
+            )
+        assert result["recorded"] is True
+        assert result["outcome"] == "no_answer"
+        assert result["should_retry"] is True
+        assert result["next_attempt"] == 2
+
+    async def test_mark_call_outcome_voicemail_triggers_retry(self) -> None:
+        """Records voicemail outcome, should_retry=True."""
+        mock_session = AsyncMock()
+        participant = MagicMock()
+        participant.outreach_attempt_count = 0
+
+        with (
+            patch(
+                "src.agents.outreach.get_participant_by_id",
+                return_value=participant,
+            ),
+            patch("src.agents.outreach.log_event", return_value=MagicMock()),
+        ):
+            result = await mark_call_outcome(
+                mock_session, uuid.uuid4(), "trial-1", "voicemail",
+            )
+        assert result["recorded"] is True
+        assert result["outcome"] == "voicemail"
+        assert result["should_retry"] is True
+        assert result["next_attempt"] == 1

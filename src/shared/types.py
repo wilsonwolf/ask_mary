@@ -3,7 +3,7 @@
 import enum
 
 
-class IdentityStatus(str, enum.Enum):
+class IdentityStatus(enum.StrEnum):
     """Participant identity verification state."""
 
     UNVERIFIED = "unverified"
@@ -11,7 +11,7 @@ class IdentityStatus(str, enum.Enum):
     WRONG_PERSON = "wrong_person"
 
 
-class PipelineStatus(str, enum.Enum):
+class PipelineStatus(enum.StrEnum):
     """Per-trial pipeline progression state."""
 
     NEW = "new"
@@ -23,11 +23,12 @@ class PipelineStatus(str, enum.Enum):
     COMPLETED = "completed"
     NO_SHOW = "no_show"
     CANCELLED = "cancelled"
+    INELIGIBLE = "ineligible"
     UNREACHABLE = "unreachable"
     DNC = "dnc"
 
 
-class EnrollmentStatus(str, enum.Enum):
+class EnrollmentStatus(enum.StrEnum):
     """Participant enrollment state within a trial."""
 
     SCREENING = "screening"
@@ -38,7 +39,7 @@ class EnrollmentStatus(str, enum.Enum):
     INELIGIBLE = "ineligible"
 
 
-class EligibilityStatus(str, enum.Enum):
+class EligibilityStatus(enum.StrEnum):
     """Screening eligibility determination."""
 
     PENDING = "pending"
@@ -48,7 +49,7 @@ class EligibilityStatus(str, enum.Enum):
     NEEDS_HUMAN = "needs_human"
 
 
-class AppointmentStatus(str, enum.Enum):
+class AppointmentStatus(enum.StrEnum):
     """Appointment lifecycle state."""
 
     HELD = "held"
@@ -58,9 +59,10 @@ class AppointmentStatus(str, enum.Enum):
     NO_SHOW = "no_show"
     CANCELLED = "cancelled"
     EXPIRED_UNCONFIRMED = "expired_unconfirmed"
+    RELEASED = "released"
 
 
-class Channel(str, enum.Enum):
+class Channel(enum.StrEnum):
     """Communication channel."""
 
     VOICE = "voice"
@@ -69,14 +71,14 @@ class Channel(str, enum.Enum):
     SYSTEM = "system"
 
 
-class Direction(str, enum.Enum):
+class Direction(enum.StrEnum):
     """Conversation direction."""
 
     INBOUND = "inbound"
     OUTBOUND = "outbound"
 
 
-class ConversationStatus(str, enum.Enum):
+class ConversationStatus(enum.StrEnum):
     """Conversation lifecycle state."""
 
     ACTIVE = "active"
@@ -85,7 +87,7 @@ class ConversationStatus(str, enum.Enum):
     TRANSFERRED = "transferred"
 
 
-class HandoffSeverity(str, enum.Enum):
+class HandoffSeverity(enum.StrEnum):
     """Handoff urgency level."""
 
     HANDOFF_NOW = "HANDOFF_NOW"
@@ -93,7 +95,7 @@ class HandoffSeverity(str, enum.Enum):
     STOP_CONTACT = "STOP_CONTACT"
 
 
-class HandoffPriority(str, enum.Enum):
+class HandoffPriority(enum.StrEnum):
     """Handoff queue priority."""
 
     CRITICAL = "critical"
@@ -102,7 +104,7 @@ class HandoffPriority(str, enum.Enum):
     LOW = "low"
 
 
-class HandoffStatus(str, enum.Enum):
+class HandoffStatus(enum.StrEnum):
     """Handoff ticket lifecycle."""
 
     OPEN = "open"
@@ -111,7 +113,7 @@ class HandoffStatus(str, enum.Enum):
     ESCALATED = "escalated"
 
 
-class HandoffReason(str, enum.Enum):
+class HandoffReason(enum.StrEnum):
     """Reason for human handoff."""
 
     MEDICAL_ADVICE = "medical_advice"
@@ -124,9 +126,10 @@ class HandoffReason(str, enum.Enum):
     GEO_INELIGIBLE = "geo_ineligible"
     UNREACHABLE = "unreachable"
     TEACH_BACK_FAILURE = "teach_back_failure"
+    NO_SHOW = "no_show"
 
 
-class RideStatus(str, enum.Enum):
+class RideStatus(enum.StrEnum):
     """Transport ride lifecycle."""
 
     PENDING = "pending"
@@ -137,7 +140,7 @@ class RideStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
-class Provenance(str, enum.Enum):
+class Provenance(enum.StrEnum):
     """Data source provenance for audit trail."""
 
     PATIENT_STATED = "patient_stated"
@@ -146,7 +149,7 @@ class Provenance(str, enum.Enum):
     SYSTEM = "system"
 
 
-class ContactabilityRisk(str, enum.Enum):
+class ContactabilityRisk(enum.StrEnum):
     """Participant reachability risk level."""
 
     NONE = "none"
@@ -154,9 +157,30 @@ class ContactabilityRisk(str, enum.Enum):
     HIGH = "high"
 
 
-class VisitType(str, enum.Enum):
+class VisitType(enum.StrEnum):
     """Clinical trial visit type."""
 
     SCREENING = "screening"
     BASELINE = "baseline"
     FOLLOW_UP = "follow_up"
+
+
+class AdversarialCheckStatus(enum.StrEnum):
+    """Background adversarial recheck status."""
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+
+class CallOutcome(enum.StrEnum):
+    """Outcome of a completed outreach call."""
+
+    COMPLETED = "completed"
+    NO_ANSWER = "no_answer"
+    VOICEMAIL = "voicemail"
+    EARLY_HANGUP = "early_hangup"
+    WRONG_PERSON = "wrong_person"
+    REFUSED = "refused"
+    CONSENT_DENIED = "consent_denied"

@@ -14,6 +14,7 @@ from src.agents.identity import (
     update_identity_status,
     verify_identity,
 )
+from src.shared.types import IdentityStatus
 
 
 class TestIdentityAgentDefinition:
@@ -37,7 +38,7 @@ class TestVerifyIdentity:
         participant = MagicMock()
         participant.date_of_birth = date(1985, 6, 15)
         participant.address_zip = "97201"
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.contactability = {}
         with patch(
             "src.agents.identity.get_participant_by_id",
@@ -45,7 +46,7 @@ class TestVerifyIdentity:
         ):
             result = await verify_identity(mock_session, uuid.uuid4(), 1985, "97201")
         assert result["verified"] is True
-        assert participant.identity_status == "verified"
+        assert participant.identity_status == IdentityStatus.VERIFIED
         assert result["attempts"] == 1
 
     async def test_rejected_with_wrong_dob(self) -> None:
@@ -54,7 +55,7 @@ class TestVerifyIdentity:
         participant = MagicMock()
         participant.date_of_birth = date(1985, 6, 15)
         participant.address_zip = "97201"
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.contactability = {}
         with patch(
             "src.agents.identity.get_participant_by_id",
@@ -69,7 +70,7 @@ class TestVerifyIdentity:
         participant = MagicMock()
         participant.date_of_birth = date(1985, 6, 15)
         participant.address_zip = "97201"
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.contactability = {}
         with patch(
             "src.agents.identity.get_participant_by_id",
@@ -84,7 +85,7 @@ class TestVerifyIdentity:
         participant = MagicMock()
         participant.date_of_birth = date(1985, 6, 15)
         participant.address_zip = "97201"
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.contactability = {"identity_attempts": 1}
         with patch(
             "src.agents.identity.get_participant_by_id",
@@ -121,7 +122,7 @@ class TestVerifyIdentity:
         participant = MagicMock()
         participant.date_of_birth = date(1985, 6, 15)
         participant.address_zip = "97201"
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.contactability = {}
         with patch(
             "src.agents.identity.get_participant_by_id",
@@ -135,7 +136,7 @@ class TestVerifyIdentity:
             )
         assert result["attempts"] == 1
         assert result["verified"] is False
-        assert "handoff_required" not in result
+        assert result["handoff_required"] is False
 
 
 class TestDetectDuplicate:
@@ -194,14 +195,14 @@ class TestMarkWrongPerson:
         """Wrong person sets identity_status + DNC all_channels."""
         mock_session = AsyncMock()
         participant = MagicMock()
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         participant.dnc_flags = {}
         with patch(
             "src.agents.identity.get_participant_by_id",
             return_value=participant,
         ):
             result = await mark_wrong_person(mock_session, uuid.uuid4())
-        assert participant.identity_status == "wrong_person"
+        assert participant.identity_status == IdentityStatus.WRONG_PERSON
         assert participant.dnc_flags["all_channels"] is True
         assert result["marked"] is True
 
@@ -213,11 +214,15 @@ class TestUpdateIdentityStatus:
         """Updates the identity_status field."""
         mock_session = AsyncMock()
         participant = MagicMock()
-        participant.identity_status = "unverified"
+        participant.identity_status = IdentityStatus.UNVERIFIED
         with patch(
             "src.agents.identity.get_participant_by_id",
             return_value=participant,
         ):
-            result = await update_identity_status(mock_session, uuid.uuid4(), "verified")
-        assert participant.identity_status == "verified"
-        assert result["updated"] is True
+            result = await update_identity_status(
+                mock_session,
+                uuid.uuid4(),
+                IdentityStatus.VERIFIED,
+            )
+        assert participant.identity_status == IdentityStatus.VERIFIED
+        assert result["verified"] is True

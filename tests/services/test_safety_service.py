@@ -8,6 +8,7 @@ from src.services.safety_service import (
     run_safety_gate,
 )
 from src.shared.safety_gate import SafetyResult
+from src.shared.types import HandoffReason, HandoffSeverity
 
 
 class TestBuildSafetyCallback:
@@ -29,8 +30,8 @@ class TestBuildSafetyCallback:
 
         result = SafetyResult(
             triggered=True,
-            trigger_type="severe_symptoms",
-            severity="HANDOFF_NOW",
+            trigger_type=HandoffReason.SEVERE_SYMPTOMS,
+            severity=HandoffSeverity.HANDOFF_NOW,
         )
 
         with (
@@ -52,14 +53,14 @@ class TestBuildSafetyCallback:
             patch(
                 "src.services.safety_service._initiate_warm_transfer",
                 new_callable=AsyncMock,
-            ) as mock_transfer,
+            ),
         ):
             await callback(result)
             mock_create.assert_called_once_with(
                 mock_session,
                 participant_id=participant_id,
-                reason="severe_symptoms",
-                severity="HANDOFF_NOW",
+                reason=HandoffReason.SEVERE_SYMPTOMS,
+                severity=HandoffSeverity.HANDOFF_NOW,
                 conversation_id=conversation_id,
                 trial_id=trial_id,
                 summary="Safety gate: severe_symptoms",
@@ -81,8 +82,8 @@ class TestBuildSafetyCallback:
 
         result = SafetyResult(
             triggered=True,
-            trigger_type="severe_symptoms",
-            severity="HANDOFF_NOW",
+            trigger_type=HandoffReason.SEVERE_SYMPTOMS,
+            severity=HandoffSeverity.HANDOFF_NOW,
         )
 
         with (
@@ -108,7 +109,8 @@ class TestBuildSafetyCallback:
         ):
             await callback(result)
             mock_transfer.assert_called_once_with(
-                call_sid, "+15551234567",
+                call_sid,
+                "+15551234567",
             )
 
     async def test_no_transfer_without_call_sid(self) -> None:
@@ -124,8 +126,8 @@ class TestBuildSafetyCallback:
 
         result = SafetyResult(
             triggered=True,
-            trigger_type="severe_symptoms",
-            severity="HANDOFF_NOW",
+            trigger_type=HandoffReason.SEVERE_SYMPTOMS,
+            severity=HandoffSeverity.HANDOFF_NOW,
         )
 
         with (
@@ -185,7 +187,7 @@ class TestRunSafetyGate:
                 trial_id="trial-1",
             )
         assert result.triggered is True
-        assert result.trigger_type == "severe_symptoms"
+        assert result.trigger_type == HandoffReason.SEVERE_SYMPTOMS
         mock_create.assert_called_once()
 
     async def test_safe_response_no_handoff(self) -> None:
