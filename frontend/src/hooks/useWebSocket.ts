@@ -22,7 +22,7 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
       for (const evt of events) {
         const msg: WsMessage = {
           type: 'event',
-          data: evt as WsMessage['data'],
+          data: evt as unknown as WsMessage['data'],
         }
         onMessageRef.current(msg)
       }
