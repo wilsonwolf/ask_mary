@@ -6,14 +6,14 @@ const RECONNECT_MS = 1000
 
 /**
  * Auto-reconnecting WebSocket hook for real-time event streaming.
- * Replays historical events from the REST API on reconnect so the
- * dashboard recovers state after a disconnect.
+ * Replays historical events from the REST API on every connect (including
+ * first load) so the dashboard always shows events that happened before
+ * the page was opened or after a Cloud Run restart.
  */
 export function useWebSocket(onMessage: (msg: WsMessage) => void) {
   const wsRef = useRef<WebSocket | null>(null)
   const [connected, setConnected] = useState(false)
   const onMessageRef = useRef(onMessage)
-  const hasConnectedBefore = useRef(false)
   onMessageRef.current = onMessage
 
   const replayEvents = useCallback(async () => {
@@ -38,10 +38,9 @@ export function useWebSocket(onMessage: (msg: WsMessage) => void) {
 
     ws.onopen = () => {
       setConnected(true)
-      if (hasConnectedBefore.current) {
-        void replayEvents()
-      }
-      hasConnectedBefore.current = true
+      // Always replay on connect — catches events from before the page
+      // opened and after a server restart.
+      void replayEvents()
     }
 
     ws.onmessage = (ev: MessageEvent) => {

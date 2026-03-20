@@ -811,6 +811,9 @@ class TestCheckGeoEligibility:
         mock_result = GeoEligibilityResult(
             eligible=True, distance_km=25.0,
         )
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
 
         with (
             patch(
@@ -822,6 +825,8 @@ class TestCheckGeoEligibility:
                 "src.api.webhooks.create_handoff",
                 new_callable=AsyncMock,
             ) as mock_handoff,
+            patch("src.api.webhooks.log_event", new_callable=AsyncMock, return_value=mock_event),
+            patch("src.api.webhooks.broadcast_event", new_callable=AsyncMock),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -852,6 +857,9 @@ class TestCheckGeoEligibility:
         mock_result = GeoEligibilityResult(
             eligible=False, distance_km=150.0, max_km=80.0,
         )
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
 
         with (
             patch(
@@ -863,6 +871,8 @@ class TestCheckGeoEligibility:
                 "src.api.webhooks.create_handoff",
                 new_callable=AsyncMock,
             ) as mock_handoff,
+            patch("src.api.webhooks.log_event", new_callable=AsyncMock, return_value=mock_event),
+            patch("src.api.webhooks.broadcast_event", new_callable=AsyncMock),
         ):
             transport = ASGITransport(app=app)
             async with AsyncClient(
@@ -1127,3 +1137,215 @@ class TestMarkWrongPerson:
         assert data["verified"] is False
         assert data["marked"] is True
         assert data["reason"] == "wrong_person"
+
+
+class TestCheckHardExcludesBroadcast:
+    """check_hard_excludes broadcasts a dashboard event."""
+
+    async def test_broadcasts_hard_excludes_checked_event(self, app) -> None:
+        """Handler broadcasts hard_excludes_checked event via WebSocket."""
+        from src.shared.response_models import HardExcludeResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = HardExcludeResult(excluded=False, matched_criteria=[], reason="")
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
+
+        with (
+            patch(
+                "src.api.webhooks.check_hard_excludes",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=mock_event,
+            ),
+            patch(
+                "src.api.webhooks.broadcast_event",
+                new_callable=AsyncMock,
+            ) as mock_broadcast,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_hard_excludes",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                            "responses": {},
+                        },
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_broadcast.assert_called_once()
+        broadcast_data = mock_broadcast.call_args[0][0]["data"]
+        assert broadcast_data["event_type"] == "hard_excludes_checked"
+        assert broadcast_data["participant_id"] == participant_id
+
+    async def test_broadcasts_excluded_true_in_payload(self, app) -> None:
+        """Broadcast payload includes excluded=True when participant is excluded."""
+        from src.shared.response_models import HardExcludeResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = HardExcludeResult(
+            excluded=True,
+            matched_criteria=["age_under_18"],
+            reason="Participant is under 18",
+        )
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
+
+        with (
+            patch(
+                "src.api.webhooks.check_hard_excludes",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=mock_event,
+            ),
+            patch(
+                "src.api.webhooks.broadcast_event",
+                new_callable=AsyncMock,
+            ) as mock_broadcast,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_hard_excludes",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                            "responses": {},
+                        },
+                    },
+                )
+
+        broadcast_payload = mock_broadcast.call_args[0][0]["data"]["payload"]
+        assert broadcast_payload["excluded"] is True
+
+
+class TestCheckGeoEligibilityBroadcast:
+    """check_geo_eligibility broadcasts a dashboard event on both pass and fail."""
+
+    async def test_broadcasts_geo_eligibility_checked_on_eligible(self, app) -> None:
+        """Eligible result still broadcasts geo_eligibility_checked event."""
+        from src.shared.response_models import GeoEligibilityResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = GeoEligibilityResult(eligible=True, distance_km=25.0)
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
+
+        with (
+            patch(
+                "src.api.webhooks.check_geo_eligibility",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.create_handoff",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=mock_event,
+            ),
+            patch(
+                "src.api.webhooks.broadcast_event",
+                new_callable=AsyncMock,
+            ) as mock_broadcast,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_geo_eligibility",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                        },
+                    },
+                )
+
+        assert response.status_code == 200
+        mock_broadcast.assert_called_once()
+        broadcast_data = mock_broadcast.call_args[0][0]["data"]
+        assert broadcast_data["event_type"] == "geo_eligibility_checked"
+
+    async def test_broadcasts_geo_eligibility_checked_on_ineligible(self, app) -> None:
+        """Ineligible result also broadcasts geo_eligibility_checked event."""
+        from src.shared.response_models import GeoEligibilityResult
+
+        participant_id = str(uuid.uuid4())
+        mock_result = GeoEligibilityResult(eligible=False, distance_km=150.0, max_km=80.0)
+        mock_event = MagicMock()
+        mock_event.event_id = uuid.uuid4()
+        mock_event.created_at = "2026-03-19T10:00:00"
+
+        with (
+            patch(
+                "src.api.webhooks.check_geo_eligibility",
+                new_callable=AsyncMock,
+                return_value=mock_result,
+            ),
+            patch(
+                "src.api.webhooks.create_handoff",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "src.api.webhooks.log_event",
+                new_callable=AsyncMock,
+                return_value=mock_event,
+            ),
+            patch(
+                "src.api.webhooks.broadcast_event",
+                new_callable=AsyncMock,
+            ) as mock_broadcast,
+        ):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            ) as client:
+                await client.post(
+                    "/webhooks/elevenlabs/server-tool",
+                    json={
+                        "tool_name": "check_geo_eligibility",
+                        "conversation_id": "conv-123",
+                        "parameters": {
+                            "participant_id": participant_id,
+                            "trial_id": "trial-1",
+                        },
+                    },
+                )
+
+        mock_broadcast.assert_called_once()
+        broadcast_data = mock_broadcast.call_args[0][0]["data"]
+        assert broadcast_data["event_type"] == "geo_eligibility_checked"

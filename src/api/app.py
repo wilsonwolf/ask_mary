@@ -33,14 +33,18 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     Yields:
         Control to the running application.
     """
+    from src.api.event_bus import shutdown as event_bus_shutdown
+    from src.api.event_bus import startup as event_bus_startup
     from src.services.cloud_tasks_client import (
         start_task_executor,
         stop_task_executor,
     )
 
+    await event_bus_startup()
     await start_task_executor()
     yield
     await stop_task_executor()
+    await event_bus_shutdown()
 
 
 def create_app() -> FastAPI:

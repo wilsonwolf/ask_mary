@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Public URL (for Twilio status callbacks)
     public_base_url: str = ""
 
+    # Redis (pub/sub for distributed WebSocket broadcast)
+    # Leave empty to fall back to in-memory broadcast (single-instance only)
+    redis_url: str = ""
+
     # Dashboard / CORS
     cors_allowed_origins: list[str] = [
         "http://localhost:5173",

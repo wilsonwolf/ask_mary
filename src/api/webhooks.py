@@ -439,8 +439,6 @@ async def _handle_check_hard_excludes(
 ) -> dict[str, Any]:
     """Handle hard exclude check server tool call.
 
-    Intermediate check — no business event persisted or broadcast.
-
     Args:
         session: Active database session.
         params: Tool parameters with participant_id, trial_id, responses.
@@ -448,12 +446,21 @@ async def _handle_check_hard_excludes(
     Returns:
         Hard exclude check result.
     """
-    return await check_hard_excludes(
+    participant_id = uuid.UUID(params["participant_id"])
+    result = await check_hard_excludes(
         session,
-        uuid.UUID(params["participant_id"]),
+        participant_id,
         params["trial_id"],
         params.get("responses", {}),
     )
+    await _log_and_broadcast(
+        session,
+        participant_id,
+        "hard_excludes_checked",
+        result if isinstance(result, dict) else result.model_dump(exclude_none=True),
+        trial_id=params.get("trial_id"),
+    )
+    return result
 
 
 async def _handle_determine_eligibility(
@@ -989,6 +996,13 @@ async def _handle_check_geo(
             summary=f"Participant outside max distance for trial {trial_id}",
             trial_id=trial_id,
         )
+    await _log_and_broadcast(
+        session,
+        participant_id,
+        "geo_eligibility_checked",
+        result if isinstance(result, dict) else result.model_dump(exclude_none=True),
+        trial_id=trial_id,
+    )
     return {**result}
 
 
