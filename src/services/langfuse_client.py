@@ -115,6 +115,9 @@ def end_span(span: TraceSpan) -> None:
 
     Args:
         span: Span to end.
+
+    Returns:
+        None.
     """
     span.ended_at = datetime.now(UTC).isoformat()
 
@@ -124,5 +127,8 @@ def flush() -> None:
 
     MVP stub: no-op (traces are logged inline).
     Production: calls langfuse.flush().
+
+    Returns:
+        None.
     """
     logger.debug("langfuse_flush_stub")

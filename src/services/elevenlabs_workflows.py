@@ -158,6 +158,9 @@ class WorkflowDefinition:
     def validate_transitions(self) -> list[str]:
         """Check that all transition targets reference existing nodes.
 
+        Args:
+            No additional arguments beyond self.
+
         Returns:
             List of error messages for invalid transitions.
         """
@@ -167,8 +170,7 @@ class WorkflowDefinition:
             for edge in node.transitions:
                 if edge.target_node_id not in node_ids:
                     errors.append(
-                        f"Node '{node.node_id}' references "
-                        f"unknown target '{edge.target_node_id}'"
+                        f"Node '{node.node_id}' references unknown target '{edge.target_node_id}'"
                     )
         return errors
 
@@ -513,12 +515,10 @@ def build_pipeline_workflow(
         name="Emergency Transfer",
         node_type=NodeType.TRANSFER,
         system_prompt=(
-            "I'm connecting you with our coordinator right now. "
-            "Please stay on the line."
+            "I'm connecting you with our coordinator right now. Please stay on the line."
         ),
         description=(
-            f"Warm transfer to coordinator at {coordinator_phone} "
-            f"for Tier 1 medical emergencies."
+            f"Warm transfer to coordinator at {coordinator_phone} for Tier 1 medical emergencies."
         ),
     )
 
@@ -534,12 +534,10 @@ def build_pipeline_workflow(
         name="Coordinator Handoff",
         node_type=NodeType.TRANSFER,
         system_prompt=(
-            "Let me connect you with a coordinator who can help. "
-            "Please stay on the line."
+            "Let me connect you with a coordinator who can help. Please stay on the line."
         ),
         description=(
-            f"Warm transfer to coordinator at {coordinator_phone} "
-            f"for Tier 2 stuck participant."
+            f"Warm transfer to coordinator at {coordinator_phone} for Tier 2 stuck participant."
         ),
     )
 
@@ -907,10 +905,7 @@ def workflow_to_api_payload(
     """
     return {
         "name": workflow.name,
-        "nodes": {
-            node.node_id: _serialize_node(node)
-            for node in workflow.nodes
-        },
+        "nodes": {node.node_id: _serialize_node(node) for node in workflow.nodes},
         "entry_node_id": workflow.entry_node_id,
         "metadata": {"version": workflow.version},
     }

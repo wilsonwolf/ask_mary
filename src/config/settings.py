@@ -82,6 +82,9 @@ class Settings(BaseSettings):
 
         Uses Unix socket when cloud_sql_instance_connection is set
         (Cloud Run). Falls back to TCP host:port for local dev.
+
+        Returns:
+            Async PostgreSQL connection string.
         """
         if self.cloud_sql_instance_connection:
             socket_path = f"/cloudsql/{self.cloud_sql_instance_connection}"

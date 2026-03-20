@@ -20,6 +20,9 @@ def connect(websocket: WebSocket) -> None:
 
     Args:
         websocket: The WebSocket connection to add.
+
+    Returns:
+        None.
     """
     _clients.add(websocket)
     logger.info("ws_client_connected, total=%d", len(_clients))
@@ -30,6 +33,9 @@ def disconnect(websocket: WebSocket) -> None:
 
     Args:
         websocket: The WebSocket connection to remove.
+
+    Returns:
+        None.
     """
     _clients.discard(websocket)
     logger.info("ws_client_disconnected, total=%d", len(_clients))

@@ -73,6 +73,9 @@ class AgentResult(BaseModel):
     def keys(self) -> list[str]:
         """Return all field names for dict unpacking support.
 
+        Args:
+            No additional arguments beyond self.
+
         Returns:
             List of model field name strings.
         """

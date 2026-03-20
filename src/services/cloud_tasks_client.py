@@ -159,6 +159,9 @@ def clear_pending_tasks() -> None:
     """Clear all tasks from the in-memory store.
 
     Used by tests to reset state between runs.
+
+    Returns:
+        None.
     """
     _pending_tasks.clear()
 
@@ -208,7 +211,8 @@ async def _process_due_tasks() -> None:
     now = datetime.now(UTC).isoformat()
     async with _task_lock:
         due_tasks = [
-            task for task in _pending_tasks
+            task
+            for task in _pending_tasks
             if task["status"] == "pending" and str(task["send_at"]) <= now
         ]
     for task in due_tasks:
